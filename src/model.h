@@ -311,9 +311,10 @@ public:
     void CancelPass();
     int hexTarget = 0; // what the typed hex sets: 0 the accent, 1 the custom background
     std::wstring hexEdit; // what's typed so far, without the #
-    int notifyPills = 0; // 1: windows notifications also drop as a pill
+    int notifyPills = 1; // 1: windows notifications drop as a dynamic island pop-up instead of windows' banner (on by default)
     int quiet = 0; // do not disturb: no notification pills; shared with halobar through the same value
     bool haloPills = false; // halobar runs with its pills on: it stays quiet while we're up, so we show them
+    bool bannersTaken = false; // we switched windows' own toast banners off so notifications appear in the island instead
     int fullLyrics = 1; // the fullscreen player shows synced lyrics beside the cover (on by default)
     bool settingsOpen = false;
     bool calOpen = false, calFresh = false; // fresh: just opened, start on this month

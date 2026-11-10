@@ -1,12 +1,18 @@
 #pragma once
 #include <windows.h>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace sys {
 
 struct Toast {
-    std::wstring app, title, body;
+    std::wstring app, aumid, title, body, launch, image;
+    std::vector<uint32_t> iconPx; // premultiplied BGRA app/sender icon, read off the ui thread
+    unsigned iconW = 0, iconH = 0;
+    int iconGlyph = 0; // optional fallback glyph when no app icon bitmap is provided (e.g. timer alerts)
+    bool iconRound = false, silent = false;
 };
 
 class NotifyWatch { // mirrors new windows notifications; holds nothing unless started

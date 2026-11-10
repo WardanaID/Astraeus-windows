@@ -413,7 +413,7 @@ uint64_t HashText(const std::wstring& s, const void* f, float w, float h, float 
     k = Mix64(k, (uint64_t)(uintptr_t)f); // format pointer is stable, formats never freed
     k = Mix64(k, (uint64_t)(w * 4)); // quarter px precision
     k = Mix64(k, (uint64_t)(h * 4));
-    return Mix64(k, (uint64_t)(spacing * 16));
+    return Mix64(k, (uint64_t)(int64_t)std::llround(spacing * 16.0f));
 }
 
 constexpr size_t kMaxGrad = 96; // gradient cache cap, wiped when full
@@ -453,7 +453,14 @@ IDWriteTextLayout* Canvas::Layout(const std::wstring& s, IDWriteTextFormat* f, f
     }
     ComPtr<IDWriteTextLayout> layout;
     if (FAILED(gfx::DWrite()->CreateTextLayout(s.c_str(), (UINT32)s.size(), f, w, h, &layout))) return nullptr;
-    if (spacing != 0) {
+    if (spacing <= -1000.0f) {
+        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        if (spacing <= -1500.0f) {
+            DWRITE_TRIMMING noTrim = {DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
+            layout->SetTrimming(&noTrim, nullptr);
+        }
+    } else if (spacing != 0) {
         ComPtr<IDWriteTextLayout1> l1;
         if (SUCCEEDED(layout.As(&l1))) l1->SetCharacterSpacing(0, spacing, 0, {0, (UINT32)s.size()}); // tracking needs layout1
     }
@@ -533,6 +540,25 @@ void Canvas::Text(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float s
     IDWriteTextFormat* f = gfx::TextFmt(w, size, a);
     IDWriteTextLayout* l = f ? Layout(s, f, Width(r), Height(r), 0) : nullptr; // cached layout, no reshaping per frame
     if (l) rt->DrawTextLayout({r.left, r.top}, l, Brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP); // clip to rect
+}
+
+void Canvas::TextWrap(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, bool ellipsis) {
+    if (s.empty()) return;
+    if (listening) Say(s, 0, r);
+    IDWriteTextFormat* f = gfx::TextFmt(w, size, Align::Left);
+    IDWriteTextLayout* l = f ? Layout(s, f, (std::max)(1.0f, Width(r)), (std::max)(1.0f, Height(r)), ellipsis ? -1000.0f : -2000.0f) : nullptr;
+    if (l) rt->DrawTextLayout({r.left, r.top}, l, Brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+float Canvas::MeasureWrap(const std::wstring& s, Weight w, float size, float maxW, int* outLines) {
+    if (outLines) *outLines = 0;
+    if (s.empty()) return 0;
+    IDWriteTextFormat* f = gfx::TextFmt(w, size, Align::Left);
+    IDWriteTextLayout* l = f ? Layout(s, f, (std::max)(20.0f, maxW), 2000.0f, -2000.0f) : nullptr;
+    DWRITE_TEXT_METRICS tm{};
+    if (!l || FAILED(l->GetMetrics(&tm))) return 0;
+    if (outLines) *outLines = (int)tm.lineCount;
+    return tm.height;
 }
 
 float Canvas::TextOnce(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c) {

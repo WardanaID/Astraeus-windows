@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cwctype>
 #include <deque>
 #include <mutex>
 
@@ -13,10 +14,10 @@ namespace {
 
 // new notifications come straight from windows' own notification database, the way halobar reads them:
 // it's written even with windows' banners switched off, where neither a popup nor the notification listener sees anything
-constexpr DWORD kSettleMs = 150; // windows writes the database in a few bursts: read once they've settled
-constexpr DWORD kPollMs = 3000; // safety net for a folder change that went missing
+constexpr DWORD kSettleMs = 80; // windows writes the database in a few bursts: read once they've settled
+constexpr DWORD kPollMs = 2000; // safety net for a folder change that went missing
 constexpr size_t kReadMax = 20; // newest rows looked at per read, a burst of messages fits easily
-constexpr size_t kQueueMax = 4; // a flood keeps only the latest few
+constexpr size_t kQueueMax = 6; // a flood keeps only the latest few
 
 struct State {
     HWND hwnd = nullptr;
@@ -24,6 +25,7 @@ struct State {
     HANDLE change = INVALID_HANDLE_VALUE; // the notifications folder, signalled on every write
     PTP_WAIT wait = nullptr;
     PTP_TIMER settle = nullptr, poll = nullptr;
+    HWINEVENTHOOK hook = nullptr;
     std::atomic<bool> live{true}, busy{false};
     std::atomic<int64_t> stamp{0}; // the database's write stamp at the last read
     int64_t lastId = -1; // newest notification already seen, -1 until the first read; only reads touch it
@@ -31,11 +33,46 @@ struct State {
     std::deque<Toast> pending; // several at once show one after another
 };
 
+State* gHookState = nullptr;
+
 void Arm(PTP_TIMER t, DWORD dueMs, DWORD periodMs) {
     ULARGE_INTEGER due;
     due.QuadPart = (ULONGLONG)(-(LONGLONG)dueMs * 10000); // relative, 100 ns units
     FILETIME ft = {due.LowPart, due.HighPart};
-    SetThreadpoolTimer(t, &ft, periodMs, periodMs ? 1000 : 0); // the poll gets a second of slack, windows batches its wakeups
+    SetThreadpoolTimer(t, &ft, periodMs, periodMs ? 500 : 0);
+}
+
+bool IsShellToastWindow(HWND h) {
+    LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+    if ((ex & (WS_EX_TOPMOST | WS_EX_NOACTIVATE)) != (WS_EX_TOPMOST | WS_EX_NOACTIVATE)) return false;
+    wchar_t cls[64] = {};
+    if (!GetClassNameW(h, cls, 64) || wcscmp(cls, L"Windows.UI.Core.CoreWindow") != 0) return false;
+    RECT rc{};
+    if (!GetWindowRect(h, &rc)) return false;
+    int w = rc.right - rc.left, ht = rc.bottom - rc.top;
+    if (w < 240 || w > 520 || ht < 40 || ht > 250) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (!pid) return false;
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return false;
+    wchar_t exe[MAX_PATH] = {};
+    DWORD sz = MAX_PATH;
+    bool ok = QueryFullProcessImageNameW(p, 0, exe, &sz) != FALSE;
+    CloseHandle(p);
+    if (!ok) return false;
+    std::wstring path = exe;
+    for (wchar_t& c : path) c = (wchar_t)std::towlower(c);
+    return path.find(L"shellexperiencehost.exe") != std::wstring::npos;
+}
+
+void CALLBACK OnWinEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG idObj, LONG idChild, DWORD, DWORD) {
+    if (ev != EVENT_OBJECT_SHOW || idObj != OBJID_WINDOW || idChild != CHILDID_SELF || !h) return;
+    if (!gHookState || !gHookState->live) return;
+    if (IsShellToastWindow(h)) {
+        ShowWindowAsync(h, SW_HIDE); // suppress native Windows banner immediately if one still appears
+        if (gHookState->settle) Arm(gHookState->settle, 25, 0);
+    }
 }
 
 void Read(State* s) { // on a pool thread: anything newer than the last one seen goes in line
@@ -59,8 +96,19 @@ void Read(State* s) { // on a pool thread: anything newer than the last one seen
         for (auto it = fresh.rbegin(); it != fresh.rend(); ++it) { // oldest first, the order they arrived
             if (it->id <= seen) continue;
             s->lastId = (std::max)(s->lastId, it->id);
+            if (it->app == L"Astraeus" || it->aumid.find(L"Astraeus") != std::wstring::npos) continue; // our own tray notifications already call Peek()
+            Toast t;
+            t.app = it->app;
+            t.aumid = it->aumid;
+            t.title = it->title;
+            t.body = it->body;
+            t.launch = it->launch;
+            t.image = it->image;
+            t.iconRound = it->iconRound;
+            t.silent = it->silent;
+            ReadNotifIcon(*it, t.iconPx, t.iconW, t.iconH, t.iconRound);
             std::lock_guard lock(s->mu);
-            s->pending.push_back(Toast{it->app, it->title, it->body});
+            s->pending.push_back(std::move(t));
             while (s->pending.size() > kQueueMax) s->pending.pop_front();
             ++added;
         }
@@ -109,6 +157,8 @@ void NotifyWatch::Start(HWND notify, UINT msg) {
     }
     if (s->poll) Arm(s->poll, kPollMs, kPollMs);
     if (s->settle) Arm(s->settle, 1, 0); // the first read, off the ui thread: only notifications from now on
+    gHookState = s.get();
+    s->hook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, OnWinEvent, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     impl = std::make_shared<Impl>(Impl{s});
 }
 
@@ -116,6 +166,11 @@ void NotifyWatch::Stop() {
     if (!impl) return;
     State* s = impl->s.get();
     s->live = false;
+    if (gHookState == s) gHookState = nullptr;
+    if (s->hook) {
+        UnhookWinEvent(s->hook);
+        s->hook = nullptr;
+    }
     if (s->wait) {
         SetThreadpoolWait(s->wait, nullptr, nullptr);
         WaitForThreadpoolWaitCallbacks(s->wait, TRUE);

@@ -342,7 +342,13 @@ void Drawer::Retract() { // the open panel and every hover state gone at once, n
         KillTimer(hwnd, kHoverTimer);
         KillTimer(hwnd, kCloseTimer);
         KillTimer(hwnd, kPeekTimer);
-        armed = peeking = dragging = island = islandLook = grow = false;
+        KillTimer(hwnd, kPeekExpandTimer);
+        armed = peeking = dragging = island = islandLook = peekLook = peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = grow = false;
+        peekHoverRow = peekCloseRow = -1;
+        peekShownRows = 0;
+        peekStack.clear();
+        peekIdx = 0;
+        peekBmp.Reset();
         if (GetCapture() == hwnd) ReleaseCapture(); // mid-drag when the game took over
         if (opened) { // same teardown as Close, minus the animation
             opened = false;
