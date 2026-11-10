@@ -150,17 +150,34 @@ void Drawer::RetryHud() { // once a second while the hud is on: speakers that we
 void Drawer::ShowHud(int icon, float level, const wchar_t* title) {
     if (hidden || overFull || stage || dragging) return; // never over a drag in progress; over a fullscreen app, only the pill
     bool showing = peeking && peekLevel >= 0;
+    peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    peekHoverRow = peekCloseRow = -1;
+    peekShownRows = 0;
+    peekStack.clear();
+    peekIdx = 0;
+    KillTimer(hwnd, kPeekExpandTimer);
+    peekBmp.Reset();
     peekIcon = icon;
     peekTitle = title;
     peekDetail.clear();
     peekLevel = level;
     if (!showing) { // a fresh drop; while one shows, it just follows the level
         if (!EnsureDev()) return;
+        if (model.Glassy() && spring.value < 1) SampleBehind();
+        KillTimer(hwnd, kReleaseTimer);
+        KillTimer(hwnd, kCloseTimer);
+        if (!peeking && !peekLook) {
+            widthSpring.value = islandLook ? IslandSpan() : kIslandW;
+            widthSpring.vel = 0;
+        }
         island = islandLook = grow = false;
-        peeking = true;
-        float reach = Side() ? kPeekSide : kPeekH;
-        Resize(reach + overshoot, true);
-        spring.target = reach;
+        peeking = peekLook = true;
+        peekReach = Side() ? kPeekSide : kPeekH;
+        widthSpring.target = PeekSpan();
+        widthSpring.damp = model.reduceMotion ? 1.0f : 0.7f;
+        SyncDesk();
+        Resize(peekReach + overshoot, true);
+        spring.target = peekReach;
         spring.damp = model.reduceMotion ? 1.0f : 0.7f;
     }
     SetTimer(hwnd, kPeekTimer, kHudMs, nullptr);

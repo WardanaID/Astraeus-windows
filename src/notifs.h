@@ -14,12 +14,15 @@ struct Notif {
     int64_t arrived = 0;  // FILETIME (100 ns since 1601, utc)
     std::wstring launch;  // toast launch attribute, may be empty
     std::wstring image;  // appLogoOverride as a local file path, else empty
+    bool iconRound = false;  // hint-crop="circle" on the toast image
+    bool silent = false;  // <audio silent="true"/>
 };
 
 std::vector<Notif> ReadNotifs(size_t max = 50, bool* ok = nullptr) noexcept;  // newest first, toasts only, not expired; empty on any failure, ok tells it apart from none
 int64_t NotifStamp() noexcept;  // changes when the db or its wal is written; cheap, poll only while the panel is open
 bool OpenNotifApp(const Notif& n) noexcept;  // protocol launch uri if it looks like one, else shell:AppsFolder\<aumid>
 std::wstring AppNameOf(const std::wstring& aumid) noexcept;  // shell display name, cached; falls back to the aumid's last segment
+bool ReadNotifIcon(const Notif& n, std::vector<uint32_t>& px, unsigned& w, unsigned& h, bool& round) noexcept;  // 64px premultiplied bgra from toast image or app shell icon
 
 // "do not disturb" as the per-user banner master switch (PushNotifications\ToastEnabled), see sys_notifs.cpp for scope
 bool SetDoNotDisturb(bool on) noexcept;

@@ -5,9 +5,11 @@
 
 #include "faces.h"
 #include "glyphs.h"
+#include "notifs.h"
 #include "starfall.h"
 
 #include <dwmapi.h>
+#include <mmsystem.h>
 #include <shellapi.h>
 #include <shellscalingapi.h>
 #include <windowsx.h>
@@ -17,6 +19,7 @@
 #include <cmath>
 
 #pragma comment(lib, "shcore.lib")
+#pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "wtsapi32.lib")
 
 namespace {
@@ -159,11 +162,18 @@ void Drawer::ShowIsland() {
     if (hidden || opened || peeking || !EnsureDev()) return;
     KillTimer(hwnd, kReleaseTimer); // keep gpu alive
     KillTimer(hwnd, kCloseTimer);
+    KillTimer(hwnd, kPeekExpandTimer);
+    peekLook = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    peekHoverRow = peekCloseRow = -1;
+    peekShownRows = 0;
     island = islandLook = true;
     model.meter.Refresh(); // bind the level meter to the current output for the mini visualizer
     Resize(kIslandH + overshoot, true); // room for the bounce, trimmed once it settles
     spring.target = kIslandH;
     spring.damp = 0.6f; // a little bounce, island style
+    widthSpring.target = IslandSpan();
+    widthSpring.damp = 0.72f;
+    if (widthSpring.value < 1.0f) widthSpring.value = IslandSpan();
     Redraw();
 }
 
@@ -206,7 +216,8 @@ float Drawer::DepthOf(D2D1_POINT_2F p) const {
 
 D2D1_RECT_F Drawer::Visible() const { // the window's part of the surface, in dips: the top left corner, as big as the window
     if (pillRgn) { // the island: only the pill's slice of the full-width window, and its bubble
-        float a = IslandSpan(), o = (winW - a) / 2, b = bubbleNow ? kBubbleGap + kBubble + 2 : 0;
+        float a = spring.value > kIslandH + 1 && widthSpring.value > IslandSpan() ? widthSpring.value : IslandSpan();
+        float o = (winW - a) / 2, b = bubbleNow ? kBubbleGap + kBubble + 2 : 0;
         return Side() ? D2D1_RECT_F{0, o, winH, o + a + b} : D2D1_RECT_F{o, 0, o + a + b, winH};
     }
     return Side() ? D2D1_RECT_F{0, 0, winH, winW} : D2D1_RECT_F{0, 0, winW, winH};
@@ -251,15 +262,22 @@ void Drawer::Resize(float hDip, bool topmost) {
     // a narrower window for the pill would move what's on screen when it grows into the panel: the pill would jump aside for a frame.
     // so the window keeps its width and a region makes everything beside the pill click-through; opening just lifts the region
     bool pill = islandLook && !opened && !idle;
+    bool peekNarrow = peekLook && !opened && !idle;
     int inner = edgeNow == 2 ? w - live : 0; // side edges: the live part's inner side; the left edge's window is only that deep anyway
     RECT want = {inner, 0, edgeNow == 0 ? w : inner + live, h}; // the right edge's trim, when nothing narrower is wanted
     if (pill) {
-        int pa = (int)(IslandSpan() * scale + 0.5f);
+        float wCur = spring.value > kIslandH + 1 ? (std::max)(IslandSpan(), widthSpring.value) : IslandSpan();
+        int pa = (int)(wCur * scale + 0.5f);
         bubbleNow = Bubble();
         int extra = bubbleNow ? (int)((kBubbleGap + kBubble + 2) * scale + 0.5f) : 0; // the bubble beside it is live too
         want = edgeNow == 0 ? RECT{(w - pa) / 2, 0, (w + pa) / 2 + extra, h} : RECT{inner, (h - pa) / 2, inner + live, (h + pa) / 2 + extra};
+    } else if (peekNarrow) {
+        float wCur = (std::max)(PeekSpan(), widthSpring.value);
+        int pa = (int)(wCur * scale + 0.5f);
+        bubbleNow = false;
+        want = edgeNow == 0 ? RECT{(w - pa) / 2, 0, (w + pa) / 2, h} : RECT{inner, (h - pa) / 2, inner + live, (h + pa) / 2};
     }
-    if (pill || live < d) {
+    if (pill || peekNarrow || live < d) {
         if (!rgnOn || !EqualRect(&want, &rgnRect)) { // only when it changed: resizes come often
             HRGN rg = CreateRectRgnIndirect(&want);
             if (rg && SetWindowRgn(hwnd, rg, FALSE)) rgnOn = true, rgnRect = want; // the system owns rg now
@@ -300,12 +318,18 @@ void Drawer::Open() {
     if (!opened && !pageSet && (!model.rememberPage || !model.HasPage(page)) && page != model.OpenPage()) prevPage = page, page = model.OpenPage(), pageT = 1; // the page picked in settings, or one still shown, without a slide
     pageSet = false;
     if (model.Glassy() && spring.value < 1) SampleBehind(); // read the background before the panel covers it
-    grow = grow || islandLook; // expanding out of the island: width morphs as it drops
-    island = islandLook = false;
+    bool fromPill = islandLook || peekLook;
+    grow = grow || fromPill; // expanding out of the island or notification pop-up: width morphs as it drops
+    island = islandLook = peekLook = peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    peekHoverRow = peekCloseRow = -1;
+    peekShownRows = 0;
+    peekStack.clear();
+    peekIdx = 0;
     if (!EnsureDev()) return; // gpu may have been freed while idle
     KillTimer(hwnd, kReleaseTimer); // keep gpu alive
     KillTimer(hwnd, kCloseTimer);
     KillTimer(hwnd, kPeekTimer);
+    KillTimer(hwnd, kPeekExpandTimer);
     peeking = false; // peek upgrades to full open
     for (sys::Toast t; model.notifyWatch.Pop(t);) {} // the rest of a notification queue would only show stale once it closes
     if (!opened) {
@@ -396,7 +420,10 @@ void Drawer::Close() {
     if (cfg.gpuIdleSec > 0) SetTimer(hwnd, kReleaseTimer, (UINT)cfg.gpuIdleSec * 1000 + 1000, nullptr); // freed, or trimmed if the pill stays
     KillTimer(hwnd, kCloseTimer);
     KillTimer(hwnd, kPeekTimer);
-    peeking = false;
+    KillTimer(hwnd, kPeekExpandTimer);
+    peeking = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    peekHoverRow = peekCloseRow = -1;
+
     opened = false;
     island = false; // the island retracts with the same spring, its shape stays until it's gone
     model.hexFocus = model.cityFocus = model.faceSearch = false;
@@ -519,7 +546,24 @@ void Drawer::SetPage(int p) {
 
 void Drawer::Peek(const std::wstring& title, const std::wstring& detail, int icon) {
     if (overFull) return; // over a fullscreen app, only the pill
+    if (!opened && peeking && peekToastNow && model.PillsWanted()) {
+        sys::Toast toast;
+        toast.app = L"Astraeus";
+        toast.aumid = L"astraeus.notice";
+        toast.title = title;
+        toast.body = detail;
+        toast.iconGlyph = icon ? icon : glyph::Timer;
+        toast.silent = true;
+        PeekToast(std::move(toast));
+        return;
+    }
     peekLevel = -1; // a notice, not the hud's bar
+    peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    peekHoverRow = peekCloseRow = -1;
+    peekStack.clear();
+    peekIdx = 0;
+    KillTimer(hwnd, kPeekExpandTimer);
+    peekBmp.Reset();
     peekIcon = icon;
     peekTitle = title;
     peekDetail = detail;
@@ -528,14 +572,253 @@ void Drawer::Peek(const std::wstring& title, const std::wstring& detail, int ico
         return;
     }
     if (hidden || !EnsureDev()) return;
+    if (model.Glassy() && spring.value < 1) SampleBehind();
+    KillTimer(hwnd, kReleaseTimer);
+    KillTimer(hwnd, kCloseTimer);
+    if (!peeking && !peekLook) {
+        widthSpring.value = islandLook ? IslandSpan() : kIslandW;
+        widthSpring.vel = 0;
+    }
     island = islandLook = grow = false; // a notice replaces the island
-    peeking = true;
-    float reach = Side() ? kPeekSide : kPeekH; // on a side edge the banner needs room for its text
-    Resize(reach + overshoot, true);
-    spring.target = reach; // drop only a short banner
-    spring.damp = 0.55f; // extra bouncy to catch the eye
-    SetTimer(hwnd, kPeekTimer, model.notifyWatch.More() ? 3500 : 6000, nullptr); // auto retract after 6s, quicker when more are waiting
+    peeking = peekLook = true;
+    peekReach = Side() ? kPeekSide : kPeekH; // on a side edge the banner needs room for its text
+    widthSpring.target = PeekSpan();
+    widthSpring.damp = model.reduceMotion ? 1.0f : 0.68f;
+    SyncDesk();
+    Resize(peekReach + overshoot, true);
+    spring.target = peekReach; // drop only a short banner
+    spring.damp = model.reduceMotion ? 1.0f : 0.58f; // extra bouncy to catch the eye
+    SetTimer(hwnd, kPeekTimer, model.notifyWatch.More() ? 3500 : 5000, nullptr);
     Redraw();
+}
+
+D2D1_RECT_F Drawer::PeekCloseBox(float h) const {
+    (void)h;
+    if (Side()) return D2D1_RECT_F{};
+    float span = ActivePeekSpan(), inner = span - 2 * cfg.fillet - 28;
+    float x0 = winW / 2 - inner / 2;
+    return Rect(x0 + inner - 22, 8, 22, 22);
+}
+
+D2D1_RECT_F Drawer::PeekPrevBox() const {
+    if (Side() || peekExpanded || peekStack.size() <= 1) return D2D1_RECT_F{};
+    float span = ActivePeekSpan(), inner = span - 2 * cfg.fillet - 28;
+    float x1 = winW / 2 + inner / 2;
+    return Rect(x1 - 94, 7, 18, 20);
+}
+
+D2D1_RECT_F Drawer::PeekNextBox() const {
+    if (Side() || peekExpanded || peekStack.size() <= 1) return D2D1_RECT_F{};
+    float span = ActivePeekSpan(), inner = span - 2 * cfg.fillet - 28;
+    float x1 = winW / 2 + inner / 2;
+    return Rect(x1 - 46, 7, 18, 20);
+}
+
+D2D1_RECT_F Drawer::PeekClearBox() const {
+    if (Side() || !peekExpanded || peekStack.size() <= 1) return D2D1_RECT_F{};
+    float span = ActivePeekSpan(), inner = span - 2 * cfg.fillet - 28;
+    float x1 = winW / 2 + inner / 2;
+    return Rect(x1 - 82, peekPrimaryBot + 4, 82, 20);
+}
+
+int Drawer::PeekShownStackRows() const {
+    if (peekStack.size() <= 1) return 0;
+    return peekShownRows > 0 ? peekShownRows : (std::min)((int)peekStack.size() - 1, kMaxStackRows);
+}
+
+int Drawer::PeekRowRealIdx(int rowSlot) const {
+    int slot = 0;
+    for (int i = 0; i < (int)peekStack.size(); ++i) {
+        if (i == peekIdx) continue;
+        if (slot == rowSlot) return i;
+        ++slot;
+    }
+    return -1;
+}
+
+D2D1_RECT_F Drawer::PeekStackRowBox(int rowSlot) const {
+    if (Side() || !peekExpanded || rowSlot < 0 || rowSlot >= PeekShownStackRows()) return D2D1_RECT_F{};
+    float span = ActivePeekSpan(), inner = span - 2 * cfg.fillet - 28;
+    float x0 = winW / 2 - inner / 2;
+    float ry = peekPrimaryBot + 28.0f + rowSlot * 48.0f;
+    return Rect(x0, ry, inner, 44.0f);
+}
+
+D2D1_RECT_F Drawer::PeekStackRowCloseBox(int rowSlot) const {
+    D2D1_RECT_F r = PeekStackRowBox(rowSlot);
+    if (Width(r) <= 0) return D2D1_RECT_F{};
+    return Rect(r.right - 26.0f, r.top + 11.0f, 20.0f, 20.0f);
+}
+
+bool Drawer::IsPeekTruncated() const {
+    if (!peekToastNow || Side() || !canvas) return false;
+    float compactW = (std::min)(kNotifW, W > 0 ? W : kNotifW);
+    float innerCompact = compactW - 2 * cfg.fillet - 28;
+    float tw = innerCompact - 50.0f;
+    if (canvas->Measure(peekTitle, Weight::Semi, 13.0f) > tw - 26.0f) return true;
+    if (peekDetail.empty()) return false;
+    if (peekDetail.find(L'\n') != std::wstring::npos || peekDetail.find(L'\r') != std::wstring::npos) return true;
+    if (canvas->Measure(peekDetail, Weight::Regular, 11.5f) > tw - 6.0f) return true;
+    int lines = 1;
+    canvas->MeasureWrap(peekDetail, Weight::Regular, 11.5f, tw - 4.0f, &lines);
+    return lines > 1;
+}
+
+void Drawer::SyncPeekFields() {
+    if (peekStack.empty()) return;
+    peekIdx = (std::clamp)(peekIdx, 0, (int)peekStack.size() - 1);
+    auto& item = peekStack[(size_t)peekIdx];
+    if (!item.bmp && !item.toast.iconPx.empty() && item.toast.iconW > 0 && item.toast.iconH > 0 && ctx) {
+        D2D1_BITMAP_PROPERTIES1 bp = D2D1::BitmapProperties1(
+            D2D1_BITMAP_OPTIONS_NONE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        ctx->CreateBitmap({item.toast.iconW, item.toast.iconH}, item.toast.iconPx.data(), item.toast.iconW * 4, bp, &item.bmp);
+    }
+    peekToast = item.toast;
+    peekBmp = item.bmp;
+    peekTitle = !peekToast.title.empty() ? peekToast.title : (!peekToast.app.empty() ? peekToast.app : L"Notification");
+    peekDetail = peekToast.body;
+}
+
+void Drawer::UpdatePeekLayout() {
+    if (!peeking || !peekToastNow) return;
+    peekShownRows = 0;
+    if (Side()) {
+        peekReach = kPeekSide;
+    } else if (!peekExpanded) {
+        float stackExtra = peekStack.size() > 1 ? 14.0f : 0.0f;
+        peekReach = (peekDetail.empty() ? kNotifShortH : kNotifOneH) + stackExtra;
+    } else {
+        float expW = PeekSpan();
+        float innerExp = expW - 2 * cfg.fillet - 28;
+        float tw = innerExp - 50.0f;
+        float titleH = canvas ? (std::max)(18.0f, canvas->MeasureWrap(peekTitle, Weight::Semi, 13.5f, tw - 26.0f) + 2.0f) : 20.0f;
+        int availOthers = (std::max)(0, (int)peekStack.size() - 1);
+        float maxBodyH = availOthers > 0 ? (std::max)(60.0f, Depth() - 165.0f) : (std::max)(90.0f, Depth() - 80.0f);
+        float bodyH = (!peekDetail.empty() && canvas)
+            ? (std::min)(maxBodyH, (std::max)(18.0f, canvas->MeasureWrap(peekDetail, Weight::Regular, 12.0f, tw - 4.0f) + 4.0f))
+            : 0.0f;
+        peekPrimaryBot = (std::max)(62.0f, 26.0f + titleH + (bodyH > 0 ? 4.0f + bodyH : 0.0f) + 10.0f);
+        int maxFitRows = (std::min)(availOthers, kMaxStackRows);
+        while (maxFitRows > 0) {
+            float needed = peekPrimaryBot + 28.0f + maxFitRows * 48.0f + (availOthers > maxFitRows ? 16.0f : 0.0f) + 14.0f;
+            if (needed <= Depth()) break;
+            --maxFitRows;
+        }
+        peekShownRows = maxFitRows;
+        float totalH = peekPrimaryBot;
+        if (peekShownRows > 0) {
+            totalH += 28.0f + peekShownRows * 48.0f;
+            if (availOthers > peekShownRows) totalH += 16.0f;
+        }
+        peekReach = (std::min)(Depth(), totalH + 14.0f);
+    }
+    widthSpring.target = PeekSpan();
+    widthSpring.damp = model.reduceMotion ? 1.0f : 0.68f;
+    spring.target = peekReach;
+    spring.damp = model.reduceMotion ? 1.0f : 0.62f;
+    Resize((std::max)(wantH, peekReach + overshoot), true);
+    Redraw();
+}
+
+void Drawer::PeekToast(sys::Toast toast) {
+    bool isInternal = toast.launch == L"astraeus:tools" || toast.aumid == L"astraeus.notice";
+    if (overFull || hidden || (model.quiet && !isInternal) || opened || !EnsureDev()) return;
+    if (model.Glassy() && spring.value < 1) SampleBehind();
+    ULONGLONG nowTick = GetTickCount64();
+    if (!toast.silent && !model.quiet && nowTick - lastToastSoundAt > 450) {
+        lastToastSoundAt = nowTick;
+        PlaySoundW(L"Notification.Default", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT | SND_SENTRY);
+    }
+    peekLevel = -1;
+    peekIcon = glyph::Bell;
+    bool wasPeeking = peeking && peekToastNow;
+
+    PeekItem item;
+    item.toast = std::move(toast);
+    if (!item.toast.iconPx.empty() && item.toast.iconW > 0 && item.toast.iconH > 0 && ctx) {
+        D2D1_BITMAP_PROPERTIES1 bp = D2D1::BitmapProperties1(
+            D2D1_BITMAP_OPTIONS_NONE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        ctx->CreateBitmap({item.toast.iconW, item.toast.iconH}, item.toast.iconPx.data(), item.toast.iconW * 4, bp, &item.bmp);
+    }
+
+    if (!wasPeeking) peekStack.clear();
+    if (!peekStack.empty() && peekStack.front().toast.app == item.toast.app &&
+        peekStack.front().toast.title == item.toast.title && peekStack.front().toast.body == item.toast.body) {
+        peekStack.front() = std::move(item);
+    } else {
+        peekStack.insert(peekStack.begin(), std::move(item));
+        if (peekStack.size() > kMaxPeekStack) peekStack.resize(kMaxPeekStack);
+    }
+    peekIdx = 0;
+
+    if (!peeking && !peekLook) {
+        widthSpring.value = islandLook ? IslandSpan() : kIslandW;
+        widthSpring.vel = 0;
+    } else if (wasPeeking && !model.reduceMotion) {
+        spring.vel += 75.0f; // subtle tactile Dynamic Island bounce when another notification joins the stack
+        widthSpring.vel += 55.0f;
+    }
+
+    peekToastNow = true;
+    KillTimer(hwnd, kReleaseTimer);
+    KillTimer(hwnd, kCloseTimer);
+    island = islandLook = grow = false;
+    peeking = peekLook = true;
+    SyncPeekFields();
+    SyncDesk();
+    UpdatePeekLayout();
+    if (!peekHot) {
+        SetTimer(hwnd, kPeekTimer, 5500, nullptr);
+    } else if (!peekExpanded && (IsPeekTruncated() || peekStack.size() > 1)) {
+        peekDwellAt = Seconds();
+        SetTimer(hwnd, kPeekExpandTimer, kPeekDwellMs, nullptr);
+    }
+}
+
+void Drawer::StepPeekStack(int delta) {
+    if (peekStack.size() <= 1) return;
+    int n = (int)peekStack.size();
+    peekIdx = (peekIdx + delta % n + n) % n;
+    SyncPeekFields();
+    if (!model.reduceMotion) spring.vel += 35.0f;
+    UpdatePeekLayout();
+}
+
+void Drawer::DismissPeekItem(int idx) {
+    if (idx < 0 || idx >= (int)peekStack.size()) {
+        DismissPeek();
+        return;
+    }
+    peekStack.erase(peekStack.begin() + idx);
+    if (peekStack.empty()) {
+        DismissPeek();
+        return;
+    }
+    if (peekIdx >= (int)peekStack.size()) peekIdx = (int)peekStack.size() - 1;
+    else if (idx < peekIdx) --peekIdx;
+    peekHoverRow = peekCloseRow = -1;
+    SyncPeekFields();
+    UpdatePeekLayout();
+}
+
+void Drawer::DismissPeek() {
+    KillTimer(hwnd, kPeekTimer);
+    KillTimer(hwnd, kPeekExpandTimer);
+    peeking = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    peekHoverRow = peekCloseRow = -1;
+    peekStack.clear();
+    peekIdx = 0;
+    sys::Toast next;
+    if (!opened && !model.quiet && !hidden && model.notifyWatch.Pop(next)) {
+        PeekToast(std::move(next)); // seamlessly morph to the next waiting notification in the Dynamic Island
+        return;
+    }
+    if (Stays() && !(desk && desk->Up())) {
+        ShowIsland(); // smoothly shrink from the Dynamic Island notification back to the resting pill
+        return;
+    }
+    widthSpring.target = IslandSpan();
+    Close();
 }
 
 void Drawer::StartDrag(float y) {
@@ -674,8 +957,45 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             MoveDrag(DepthOf(p));
             return 0;
         }
-        if (peeking) { // a notification pill: a click opens the panel, hovering only lights it
+        if (peeking) { // a notification pop-up: hovering pauses auto-dismiss, tracks stack controls, and arms hover-dwell expansion
             TrackLeave();
+            KillTimer(hwnd, kPeekTimer);
+            bool wasHot = peekHot;
+            peekHot = true;
+            bool closeHov = peekToastNow && !Side() && Inside(PeekCloseBox((std::max)(spring.value, kIslandH)), p);
+            bool prevHov = peekToastNow && !Side() && !peekExpanded && peekStack.size() > 1 && Inside(PeekPrevBox(), p);
+            bool nextHov = peekToastNow && !Side() && !peekExpanded && peekStack.size() > 1 && Inside(PeekNextBox(), p);
+            bool clearHov = peekToastNow && !Side() && peekExpanded && peekStack.size() > 1 && Inside(PeekClearBox(), p);
+            int hovRow = -1, clsRow = -1;
+            if (peekToastNow && !Side() && peekExpanded && peekStack.size() > 1) {
+                int rows = PeekShownStackRows();
+                for (int s = 0; s < rows; ++s) {
+                    if (Inside(PeekStackRowCloseBox(s), p)) {
+                        clsRow = s;
+                        hovRow = s;
+                        break;
+                    }
+                    if (Inside(PeekStackRowBox(s), p)) {
+                        hovRow = s;
+                        break;
+                    }
+                }
+            }
+            if (!wasHot && peekToastNow && !Side() && !peekExpanded && (IsPeekTruncated() || peekStack.size() > 1)) {
+                peekDwellAt = Seconds();
+                SetTimer(hwnd, kPeekExpandTimer, kPeekDwellMs, nullptr);
+            }
+            if (!wasHot || closeHov != peekCloseHot || prevHov != peekPrevHot || nextHov != peekNextHot ||
+                clearHov != peekClearHot || hovRow != peekHoverRow || clsRow != peekCloseRow) {
+                peekCloseHot = closeHov;
+                peekPrevHot = prevHov;
+                peekNextHot = nextHov;
+                peekClearHot = clearHov;
+                peekHoverRow = hovRow;
+                peekCloseRow = clsRow;
+                Redraw();
+            }
+            hand = true;
             return 0;
         }
         if (!opened && !islandLook && spring.value < 1) { // on the closed strip; the island handles its own hover
@@ -706,6 +1026,16 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         KillTimer(hwnd, kHoverTimer);
         armed = false;
         islandHot = false;
+        if (peeking) {
+            KillTimer(hwnd, kPeekExpandTimer);
+            peekHot = peekCloseHot = peekPrevHot = peekNextHot = peekClearHot = false;
+            peekHoverRow = peekCloseRow = -1;
+            if (peekExpanded) {
+                peekExpanded = false;
+                UpdatePeekLayout();
+            }
+            SetTimer(hwnd, kPeekTimer, model.notifyWatch.More() ? 1800 : 2600, nullptr);
+        }
         input.mouse = {-1e6f, -1e6f}; // park offscreen to clear hover
         SyncRailKeys(false); // off the panel: the arrows go back at once, not on the next frame
         if ((opened || island) && !dragging && GetCapture() != hwnd && !(opened && Pinned())) { // pinned: it stays open
@@ -801,14 +1131,77 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (!opened && !peeking && spring.value <= 0) FreeDev(); // free gpu after idle
             else if (!opened && !peeking && !dragging && !(devWide && RenewDev())) TrimDev(); // the pill keeps drawing on a fresh device; if one can't be made, the old one just drops its caches
         } else if (wp == kPeekTimer) {
-            if (peeking) Close();
-            if (model.notifyWatch.More()) PostMessageW(hwnd, WM_APP_NOTIFY, 0, 0); // next in line
+            if (peeking) DismissPeek();
+        } else if (wp == kPeekExpandTimer) {
+            if (peeking && peekToastNow && peekHot && !peekExpanded && (IsPeekTruncated() || peekStack.size() > 1)) {
+                peekExpanded = true;
+                peekPrevHot = peekNextHot = false;
+                UpdatePeekLayout();
+            }
         }
         return 0;
     case WM_LBUTTONDOWN: {
         if (!opened && model.keyOnly) return 0; // only the shortcut opens it: a click on the strip, the pill or a notification does nothing
-        if ((island || peeking) && !opened) { // tap a pill: the full panel grows out of it
-            if (island && Bubble() && Inside(BubbleBox(), ToDip(lp))) { // the bubble: straight to the tool that runs
+        if ((island || peeking) && !opened) { // tap a pill (or reverse a zoom close): the full panel grows out of it, or a notification opens its app
+            D2D1_POINT_2F p = ToDip(lp);
+            if (peeking) {
+                if (peekToastNow && !Side()) {
+                    if (Inside(PeekCloseBox((std::max)(spring.value, kIslandH)), p)) {
+                        DismissPeekItem(peekIdx);
+                        return 0;
+                    }
+                    if (!peekExpanded && peekStack.size() > 1) {
+                        if (Inside(PeekPrevBox(), p)) {
+                            StepPeekStack(-1);
+                            return 0;
+                        }
+                        if (Inside(PeekNextBox(), p)) {
+                            StepPeekStack(1);
+                            return 0;
+                        }
+                    }
+                    if (peekExpanded && peekStack.size() > 1) {
+                        if (Inside(PeekClearBox(), p)) {
+                            peekStack.clear();
+                            DismissPeek();
+                            return 0;
+                        }
+                        int rows = PeekShownStackRows();
+                        for (int s = 0; s < rows; ++s) {
+                            int realIdx = PeekRowRealIdx(s);
+                            if (realIdx < 0) continue;
+                            if (Inside(PeekStackRowCloseBox(s), p)) {
+                                DismissPeekItem(realIdx);
+                                return 0;
+                            }
+                            if (Inside(PeekStackRowBox(s), p)) {
+                                peekIdx = realIdx;
+                                SyncPeekFields();
+                                if (!model.reduceMotion) spring.vel += 35.0f;
+                                UpdatePeekLayout();
+                                return 0;
+                            }
+                        }
+                    }
+                }
+                if (peekToastNow && peekToast.launch == L"astraeus:tools") {
+                    int act = model.Activity();
+                    model.toolTab = act == Model::kActWatch ? 1 : act == Model::kActFocus ? 2 : 0;
+                    if (page != Model::kPgTools && model.HasPage(Model::kPgTools)) prevPage = page, page = Model::kPgTools, pageT = 1;
+                    pageSet = true;
+                    Open();
+                    return 0;
+                }
+                if (peekToastNow && (!peekToast.aumid.empty() || !peekToast.launch.empty())) {
+                    sys::Notif n;
+                    n.aumid = peekToast.aumid;
+                    n.launch = peekToast.launch;
+                    sys::OpenNotifApp(n);
+                    DismissPeekItem(peekIdx);
+                    return 0;
+                }
+            }
+            if (island && Bubble() && Inside(BubbleBox(), p)) { // the bubble: straight to the tool that runs
                 int act = model.Activity();
                 model.toolTab = act == Model::kActWatch ? 1 : act == Model::kActFocus ? 2 : 0;
                 if (page != Model::kPgTools && model.HasPage(Model::kPgTools)) prevPage = page, page = Model::kPgTools, pageT = 1;
@@ -863,6 +1256,11 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         D2D1_POINT_2F org = BodyOrg((std::clamp)(spring.value, 0.0f, Depth() + overshoot));
         bool rail = opened && Inside(RailBox(), {p.x - org.x, p.y - org.y}); // the rail as the frame draws it, any edge or layout
         if (msg == WM_MOUSEHWHEEL && opened && !rail) return 0; // a sideways swipe means pages only over the rail
+        if (peeking && peekToastNow && !opened && peekStack.size() > 1) {
+            StepPeekStack(notches < 0 ? 1 : -1);
+            if (!peekHot) SetTimer(hwnd, kPeekTimer, 4200, nullptr);
+            return 0;
+        }
         if (rail || (island && !opened)) {
             WheelPages(msg == WM_MOUSEHWHEEL ? notches : -notches); // wheel down or swipe right: the next page
             return 0;
@@ -985,12 +1383,11 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_APP_NOTIFY: { // a windows notification arrived and pills are on, ours or handed over by halobar
         sys::Toast toast;
-        if (peeking) return 0; // one is showing: the rest wait their turn
         if (opened || model.quiet || hidden) { // open panel: don't interrupt; do not disturb or a game: dropped, all of them, never shown stale later
             while (model.notifyWatch.Pop(toast)) {}
             return 0;
         }
-        if (model.notifyWatch.Pop(toast)) Peek(toast.title.empty() ? toast.app : toast.title, toast.body.empty() ? toast.app : toast.body, glyph::Sparkle);
+        while (model.notifyWatch.Pop(toast)) PeekToast(std::move(toast));
         return 0;
     }
     case WM_APP_SHARE:
@@ -1228,6 +1625,8 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             input.mouse = ToDip(lp);
             input.rclick = true;
             Redraw();
+        } else if (peeking) {
+            DismissPeek(); // right-click on a Dynamic Island notification dismisses it
         } else if (island && !peeking && !dragging && desk && !stage) { // the regular pill: into the long pill's editor, which asks first if neither place wears it
             PostMessageW(hwnd, kDeskEditMsg, 0, deskView ? Model::kEditFromDesk : Model::kEditFromApps);
         }
@@ -1300,11 +1699,18 @@ void Drawer::Frame() {
     if (lastFrame == 0) dt = 1 / 60.0f; // first frame, assume 60hz
     lastFrame = now;
 
-    bool moving = !dragging && spring.Step(dt); // drag drives value directly
+    bool hMoving = !dragging && spring.Step(dt); // drag drives value directly
+    bool wMoving = widthSpring.Step(dt);
+    bool moving = hMoving || wMoving;
     if (!moving && !dragging) { // spring settled
         grow = false; // expansion finished, or retracted
         if (spring.target <= 0 && winH > kStrip) {
-            islandLook = hand = false; // fully retracted, back to the plain strip and arrow cursor
+            islandLook = peekLook = peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = hand = false; // fully retracted, back to the plain strip and arrow cursor
+            peekHoverRow = peekCloseRow = -1;
+            peekShownRows = 0;
+            peekStack.clear();
+            peekIdx = 0;
+            peekBmp.Reset();
             pageT = 1; // a page slide cut short by closing only advances while the body draws: left behind, it kept the closed strip at full frame rate
             Resize(kStrip, false); // shrink window so it can't block clicks
             ui.Forget();
@@ -1329,7 +1735,7 @@ void Drawer::Frame() {
             if (cfg.gpuIdleSec > 0) SetTimer(hwnd, kReleaseTimer, (UINT)cfg.gpuIdleSec * 1000, nullptr); // schedule gpu release
         } else if (spring.target > 0) {
             float room = spring.target + (hintFade > 0.01f ? kHintRoom : 0); // a tip outside the panel needs a little window
-            if (std::fabs(wantH - room) > 1) Resize(room, false); // otherwise drop the overshoot margin once at rest
+            if (std::fabs(wantH - room) > 1 || peekLook) Resize(room, false); // otherwise drop the overshoot margin once at rest
         }
     }
     if (PlaceStale() && opened) Close(); // re-dock once it has retracted
@@ -1355,6 +1761,16 @@ void Drawer::Frame() {
     themes = anim::Approach(clearInk, clearInkGoal, kShadeRate, dt, 0.004f) || themes; // clear's ink crosses over, it doesn't snap
     if (themes && desk) desk->Refresh();
     SyncCover();
+    if (peekToastNow && ctx) {
+        D2D1_BITMAP_PROPERTIES1 bp = D2D1::BitmapProperties1(
+            D2D1_BITMAP_OPTIONS_NONE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        for (auto& it : peekStack) {
+            if (!it.bmp && !it.toast.iconPx.empty() && it.toast.iconW > 0 && it.toast.iconH > 0)
+                ctx->CreateBitmap({it.toast.iconW, it.toast.iconH}, it.toast.iconPx.data(), it.toast.iconW * 4, bp, &it.bmp);
+        }
+        if (!peekBmp && !peekStack.empty() && peekIdx >= 0 && peekIdx < (int)peekStack.size())
+            peekBmp = peekStack[(size_t)peekIdx].bmp;
+    }
 
     float h = (std::max)(0.0f, (std::min)(spring.value, Depth() + overshoot)); // clamp to window room
     double drawT0 = Seconds();
@@ -1388,9 +1804,23 @@ void Drawer::Frame() {
     ComPtr<ID2D1Geometry> outline; // this frame's shape, the glass blur is cut to it
     if (h > 0.5f) {
         float shapeWide = Span();
-        if (islandLook) shapeWide = IslandSpan();
-        auto wideAt = [&](float at) { return IslandSpan() + (Span() - IslandSpan()) * anim::Clamp01((at - kIslandH) / (Depth() * 0.3f - kIslandH)); };
-        if (!islandLook && grow) shapeWide = wideAt(h); // pill widens into the panel
+        float curPeekW = ActivePeekSpan();
+        if (islandLook) {
+            shapeWide = IslandSpan();
+            if (peekReach > kIslandH + 1 && h > kIslandH + 0.5f) { // smoothly contracting from a Dynamic Island notification back to the resting pill
+                float t = anim::Clamp01((h - kIslandH) / (peekReach - kIslandH));
+                shapeWide = IslandSpan() + (curPeekW - IslandSpan()) * t;
+            }
+        } else if (peekLook) {
+            float t = peekReach > kIslandH + 1 ? anim::Clamp01((h - kIslandH) / (peekReach - kIslandH)) : 1.0f;
+            shapeWide = IslandSpan() + (curPeekW - IslandSpan()) * t; // Dynamic Island morphs smoothly in both width and height
+        }
+        auto wideAt = [&](float at) {
+            float from = peekToastNow ? curPeekW : IslandSpan();
+            float h0 = peekToastNow ? peekReach : kIslandH;
+            return from + (Span() - from) * anim::Clamp01((at - h0) / ((std::max)(h0 + 20.0f, Depth() * 0.3f) - h0));
+        };
+        if (!islandLook && !peekLook && grow) shapeWide = wideAt(h); // pill widens into the panel
         shapeXform = EdgeXform();
         ctx->SetTransform(shapeXform); // turned to the docked edge, centered in the window
         ComPtr<ID2D1Geometry> shape = Shape(h, shapeWide);
@@ -1404,17 +1834,32 @@ void Drawer::Frame() {
             skyPass = 0;
         }
         outline = shape;
-        if (glass && std::fabs(spring.vel) > 1 && !dragging) { // composition applies the blur's outline a few frames late: cut it where the glass will be, both ways
+        if (glass && (std::fabs(spring.vel) > 1 || std::fabs(widthSpring.vel) > 1) && !dragging) { // composition applies the blur's outline a few frames late: cut it where the glass will be, both ways
             bool closing = spring.target < h - overshoot; // really going away, not the bounce settling back after a drop
             float frames = closing ? 3.0f : 1.5f; // dropping and its bounce: a shorter lead, any more and the blur runs ahead of the glass
             anim::Spring ahead = spring; // where the spring will really be, not a straight line: that overshot the bounce's peak
             ahead.Step(dt * frames);
+            anim::Spring wAhead = widthSpring;
+            wAhead.Step(dt * frames);
             float lead = (std::clamp)(ahead.value, 0.0f, Depth() + overshoot);
-            outline = lead > 0.5f ? BuildShape(lead, !islandLook && grow ? wideAt(lead) : shapeWide) : nullptr;
+            float leadW = wAhead.value > 1.0f ? wAhead.value : PeekSpan();
+            float leadWide = shapeWide;
+            if (peekLook && peekReach > kIslandH + 1)
+                leadWide = IslandSpan() + (leadW - IslandSpan()) * anim::Clamp01((lead - kIslandH) / (peekReach - kIslandH));
+            else if (!islandLook && !peekLook && grow) {
+                float from = peekToastNow ? leadW : IslandSpan();
+                float h0 = peekToastNow ? peekReach : kIslandH;
+                leadWide = from + (Span() - from) * anim::Clamp01((lead - h0) / ((std::max)(h0 + 20.0f, Depth() * 0.3f) - h0));
+            }
+            outline = lead > 0.5f ? BuildShape(lead, leadWide) : nullptr;
         }
         if (ClearPill()) outline = nullptr; // nothing to frost
         ctx->SetTransform(Side() ? D2D1::Matrix3x2F::Identity() : shapeXform);
-        if (peeking) DrawPeek(h);
+        if (peeking || peekLook) {
+            DrawPeek(h);
+            if (peeking && peekToastNow && peekHot && !peekExpanded && (IsPeekTruncated() || peekStack.size() > 1))
+                ambient = true; // animate the subtle hover-dwell progress bar
+        }
         else if (islandLook) { // bars bounce only while it shows and music plays
             pillPass = pillCached ? 2 : 0;
             ambient = DrawPillNow(h, dt, now);

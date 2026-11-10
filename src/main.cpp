@@ -15,6 +15,7 @@
 #include "drawer.h"
 #include "gfx.h"
 #include "model.h"
+#include "notifs.h"
 #include "glyphs.h"
 #include "tray.h"
 #include "version.h"
@@ -423,14 +424,46 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::wstring detail = ev == 1 ? std::to_wstring(app->model->breakMin) + L" min break, then round " + std::to_wstring(app->model->focusRound + 1)
                                               : L"Round " + std::to_wstring(app->model->focusRound) + L", " + std::to_wstring(app->model->focusMin) + L" min";
                 MessageBeep(MB_ICONASTERISK);
-                app->drawer->Peek(title, detail);
-                Notify(title, detail.c_str());
+                if (app->model->PillsWanted()) {
+                    if (app->drawer->IsOpened()) {
+                        app->drawer->Peek(title, detail, glyph::Timer); // already open: switch to Tools cleanly without spawning a competing popup
+                    } else {
+                        sys::Toast toast;
+                        toast.app = L"Focus";
+                        toast.aumid = L"astraeus.timer";
+                        toast.launch = L"astraeus:tools";
+                        toast.title = title;
+                        toast.body = detail;
+                        toast.iconGlyph = glyph::Timer;
+                        toast.silent = true; // MessageBeep already sounded
+                        app->drawer->PeekToast(std::move(toast));
+                    }
+                } else {
+                    app->drawer->Peek(title, detail);
+                    Notify(title, detail.c_str());
+                }
             }
             if (app->model->TimerDone()) { // countdown just hit zero
                 std::wstring detail = app->model->TimerName() + L" timer is up";
                 MessageBeep(MB_ICONASTERISK);
-                app->drawer->Peek(L"Timer finished", detail); // in-app drop banner
-                Notify(L"Timer finished", detail.c_str()); // plus system toast
+                if (app->model->PillsWanted()) {
+                    if (app->drawer->IsOpened()) {
+                        app->drawer->Peek(L"Timer finished", detail, glyph::Timer);
+                    } else {
+                        sys::Toast toast;
+                        toast.app = L"Timer";
+                        toast.aumid = L"astraeus.timer";
+                        toast.launch = L"astraeus:tools";
+                        toast.title = L"Timer finished";
+                        toast.body = detail;
+                        toast.iconGlyph = glyph::Timer;
+                        toast.silent = true; // MessageBeep already sounded
+                        app->drawer->PeekToast(std::move(toast));
+                    }
+                } else {
+                    app->drawer->Peek(L"Timer finished", detail); // in-app drop banner
+                    Notify(L"Timer finished", detail.c_str()); // plus system toast
+                }
             }
         }
         return 0;
@@ -528,6 +561,7 @@ void DestroyHost() {
 wchar_t crashLog[MAX_PATH] = {}; // filled at start: the crash handler mustn't build strings
 
 LONG WINAPI Crashed(EXCEPTION_POINTERS* ep) { // the reason goes to astraeus.log, so a start that died at sign-in can be told apart from one that never ran
+    sys::SetDoNotDisturb(false); // restore Windows' own notification banners if we ever crash
     HANDLE f = crashLog[0] ? CreateFileW(crashLog, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, 0, nullptr) : INVALID_HANDLE_VALUE;
     if (f == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
     HMODULE mod = nullptr;

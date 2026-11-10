@@ -205,6 +205,8 @@ bool Drawer::RenewDev() {
     coverBlur.Reset();
     coverBack.Reset();
     coverPrev.Reset();
+    peekBmp.Reset();
+    for (auto& it : peekStack) it.bmp.Reset();
     ForgetShelfArt();
     pillLayer.Reset();
     pillKey = 0;
@@ -318,6 +320,8 @@ void Drawer::FreeDev() {
     coverBlur.Reset();
     coverBack.Reset();
     coverPrev.Reset(); // the flip's old cover too: it would hold the device
+    peekBmp.Reset();
+    for (auto& it : peekStack) it.bmp.Reset();
     ForgetShelfArt(); // its previews belong to this device
     if (frameWait) {
         CloseHandle(frameWait);
@@ -598,6 +602,7 @@ void Drawer::DrawBody(float h, float dt, double now) {
     if (pageT < 1) pageT = (std::min)(1.0f, pageT + dt / 0.38f); // 380ms page switch
     float e = anim::EaseOut(pageT);
     float slide = (1 - e) * (model.reduceMotion ? 0 : 26) * (model.SlotOf(page) > model.SlotOf(prevPage) ? 1 : -1); // slide 26 dips in the nav direction down the rail; calm: a crossfade
+
     float sheet = ui.Smooth(Ui::Id("bt.sheet"), model.btOpen ? 1.0f : 0, 14); // bt menu open anim
     float wsheet = ui.Smooth(Ui::Id("wifi.sheet"), model.wifiOpen ? 1.0f : 0, 14); // wi-fi picker open anim
     float ssheet = ui.Smooth(Ui::Id("set.sheet"), model.settingsOpen ? 1.0f : 0, 14); // settings open anim
@@ -788,23 +793,255 @@ void Drawer::DrawHint(float h) {
 
 void Drawer::DrawPeek(float h) {
     const Theme& t = shellNow;
-    float a = anim::Clamp01((h - 26) / 30); // fade text in as banner drops
+    float a = anim::Clamp01((h - 24) / 28); // fade content in as the Dynamic Island capsule expands
     if (a <= 0) return;
-    D2D1_RECT_F area = edgeNow == 0 ? Rect(0, 0, W, h) : edgeNow == 1 ? Rect(0, cfg.fillet, h, CH()) : Rect(winH - h, cfg.fillet, h, CH()); // visible part
-    float cx = (area.left + area.right) / 2 + (Tall() ? 60 : 0), cy = Tall() ? area.top + 70 : (area.top + area.bottom) / 2 + 2; // sidebar: near the top
-    canvas->Dot({cx - 112, cy}, 17, t.accent.Alpha(0.18f * a));
-    canvas->Icon(peekIcon ? peekIcon : glyph::Timer, {cx - 112, cy}, 21, t.accentHi.Alpha(a), true);
-    if (peekLevel >= 0) { // the hud: what changed, a bar and the number
-        float lv = peekLevel;
-        canvas->Text(peekTitle, Rect(cx - 84, cy - 20, 150, 20), Weight::Medium, 14, t.text.Alpha(a));
-        canvas->Text(w::Pct(peekLevel), Rect(cx + 76, cy - 20, 60, 20), Weight::Medium, 13, t.textDim.Alpha(a), Align::Right);
-        D2D1_RECT_F bar = Rect(cx - 84, cy + 7, 220, 6);
-        canvas->Fill(bar, 3, t.track.Alpha(a));
-        if (lv > 0.01f) canvas->FillH({bar.left, bar.top, bar.left + Width(bar) * lv, bar.bottom}, 3, t.accent.Alpha(a), t.accentHi.Alpha(a));
+    if (Side()) {
+        D2D1_RECT_F area = edgeNow == 1 ? Rect(0, cfg.fillet, h, CH()) : Rect(winH - h, cfg.fillet, h, CH());
+        float cx = (area.left + area.right) / 2 + 60, cy = area.top + 70;
+        if (peekToastNow && peekBmp) {
+            D2D1_RECT_F ib = Rect(cx - 129, cy - 17, 34, 34);
+            canvas->Art(peekBmp.Get(), nullptr, ib, peekToast.iconRound ? 17.0f : 9.0f, a);
+        } else {
+            canvas->Dot({cx - 112, cy}, 17, t.accent.Alpha(0.18f * a));
+            int fallback = peekToastNow && peekToast.iconGlyph ? peekToast.iconGlyph : glyph::Timer;
+            canvas->Icon(peekIcon ? peekIcon : fallback, {cx - 112, cy}, 21, t.accentHi.Alpha(a), true);
+        }
+        if (peekLevel >= 0) {
+            float lv = peekLevel;
+            canvas->Text(peekTitle, Rect(cx - 84, cy - 20, 150, 20), Weight::Medium, 14, t.text.Alpha(a));
+            canvas->Text(w::Pct(peekLevel), Rect(cx + 76, cy - 20, 60, 20), Weight::Medium, 13, t.textDim.Alpha(a), Align::Right);
+            D2D1_RECT_F bar = Rect(cx - 84, cy + 7, 220, 6);
+            canvas->Fill(bar, 3, t.track.Alpha(a));
+            if (lv > 0.01f) canvas->FillH({bar.left, bar.top, bar.left + Width(bar) * lv, bar.bottom}, 3, t.accent.Alpha(a), t.accentHi.Alpha(a));
+            return;
+        }
+        canvas->Text(peekTitle, Rect(cx - 84, cy - 20, 240, 22), Weight::Medium, 15, t.text.Alpha(a));
+        canvas->Text(peekDetail, Rect(cx - 84, cy + 1, 240, 18), Weight::Light, 12.5f, t.textDim.Alpha(a));
         return;
     }
-    canvas->Text(peekTitle, Rect(cx - 84, cy - 20, 240, 22), Weight::Medium, 15, t.text.Alpha(a));
-    canvas->Text(peekDetail, Rect(cx - 84, cy + 1, 240, 18), Weight::Light, 12.5f, t.textDim.Alpha(a));
+
+    float curPeekW = ActivePeekSpan();
+    float tMorph = peekReach > kIslandH + 1 ? anim::Clamp01((h - kIslandH) / (peekReach - kIslandH)) : 1.0f;
+    float curSpan = IslandSpan() + (curPeekW - IslandSpan()) * tMorph;
+    float clipW = (std::max)(40.0f, curSpan - 2 * cfg.fillet - 12);
+    canvas->PushClip(Rect(W / 2 - clipW / 2, 0, clipW, h));
+
+    float span = peekToastNow ? curPeekW : PeekSpan();
+    float inner = span - 2 * cfg.fillet - 28;
+    float x0 = W / 2 - inner / 2, x1 = x0 + inner;
+
+    if (peekToastNow) { // Dynamic Island notification pop-up (compact + stack + hover-dwell expanded)
+        float iconSz = 38.0f;
+        float iy = peekExpanded ? 12.0f : (std::max)(11.0f, (std::min)(15.0f, (h - iconSz - (peekStack.size() > 1 ? 18.0f : 8.0f)) / 2));
+        D2D1_RECT_F iconBox = Rect(x0, iy, iconSz, iconSz);
+        D2D1_POINT_2F iconCtr = {iconBox.left + iconSz / 2, iconBox.top + iconSz / 2};
+        canvas->Glow(iconCtr, iconSz * 0.95f, iconSz * 0.95f, t.accent.Alpha(0.22f * a));
+        if (peekBmp) {
+            float rad = peekToast.iconRound ? iconSz / 2 : 10.0f;
+            canvas->Art(peekBmp.Get(), nullptr, iconBox, rad, a);
+            canvas->Stroke(iconBox, rad, Color{1, 1, 1, 0.14f * a}, 1.0f);
+            D2D1_POINT_2F badge = {iconBox.right - 3, iconBox.bottom - 3};
+            canvas->Dot(badge, 5.5f, t.bg.Alpha(0.95f * a));
+            canvas->Dot(badge, 3.5f, t.accentHi.Alpha(a));
+        } else {
+            canvas->Fill(iconBox, 11.0f, t.accent.Alpha(0.18f * a));
+            canvas->Stroke(iconBox, 11.0f, t.accent.Alpha(0.32f * a), 1.0f);
+            canvas->Icon(peekToast.iconGlyph ? peekToast.iconGlyph : glyph::Bell, iconCtr, 20, t.accentHi.Alpha(a), true);
+        }
+
+        float tx = iconBox.right + 12, tw = x1 - tx;
+        std::wstring appName = !peekToast.app.empty() ? peekToast.app : L"Notification";
+
+        // Top-right close button (shown on hover, when expanded, or subtly when stacked for visual balance)
+        if (peekHot || peekExpanded || peekStack.size() > 1) {
+            D2D1_RECT_F cb = Rect(x1 - 22, 8, 22, 22);
+            float bgA = peekCloseHot ? 0.24f : (peekHot || peekExpanded ? 0.78f : 0.42f);
+            canvas->Fill(cb, 11, (peekCloseHot ? t.text : t.cardHi).Alpha(bgA * a));
+            canvas->Icon(glyph::Close, {cb.left + 11, cb.top + 11}, 13, (peekCloseHot ? t.text : t.textDim.Alpha(peekHot ? 1.0f : 0.70f)).Alpha(a));
+        }
+
+        if (!peekExpanded) {
+            // Compact Mode header & stack controls
+            float headerRightReserve = 56.0f;
+            if (peekStack.size() > 1) {
+                // Overlapping mini app icons of other notifications in the stack
+                int drawnMini = 0;
+                for (int i = 0; i < (int)peekStack.size() && drawnMini < 3; ++i) {
+                    if (i == peekIdx) continue;
+                    float mx = x1 - 110.0f - drawnMini * 11.0f;
+                    D2D1_RECT_F mb = Rect(mx, 10.0f, 14.0f, 14.0f);
+                    canvas->Fill(Inset(mb, -1.0f, -1.0f), 5.0f, t.bg.Alpha(0.92f * a));
+                    if (peekStack[(size_t)i].bmp) {
+                        canvas->Art(peekStack[(size_t)i].bmp.Get(), nullptr, mb, 4.0f, 0.9f * a);
+                    } else if (peekStack[(size_t)i].toast.iconGlyph) {
+                        canvas->Fill(mb, 4.0f, t.accent.Alpha(0.32f * a));
+                        canvas->Icon(peekStack[(size_t)i].toast.iconGlyph, {mb.left + 7.0f, mb.top + 7.0f}, 9.5f, t.accentHi.Alpha(a), true);
+                    } else {
+                        canvas->Fill(mb, 4.0f, t.accent.Alpha(0.30f * a));
+                    }
+                    ++drawnMini;
+                }
+                headerRightReserve = 104.0f + drawnMini * 11.0f + 4.0f;
+                // Stack navigation pill: < 1/N >
+                D2D1_RECT_F pillBg = Rect(x1 - 94.0f, 8.0f, 66.0f, 18.0f);
+                canvas->Fill(pillBg, 9.0f, t.cardHi.Alpha(0.72f * a));
+                canvas->Stroke(pillBg, 9.0f, Color{1, 1, 1, 0.10f * a}, 1.0f);
+
+                D2D1_RECT_F prevB = Rect(x1 - 94.0f, 8.0f, 18.0f, 18.0f);
+                D2D1_RECT_F nextB = Rect(x1 - 46.0f, 8.0f, 18.0f, 18.0f);
+                if (peekPrevHot) canvas->Fill(prevB, 9.0f, t.text.Alpha(0.18f * a));
+                if (peekNextHot) canvas->Fill(nextB, 9.0f, t.text.Alpha(0.18f * a));
+
+                // Left chevron '<'
+                float pcx = prevB.left + 9.5f, pcy = prevB.top + 9.0f;
+                Color pInk = (peekPrevHot ? t.text : t.textDim).Alpha(a);
+                canvas->Line({pcx + 2.0f, pcy - 3.5f}, {pcx - 2.0f, pcy}, pInk, 1.5f);
+                canvas->Line({pcx - 2.0f, pcy}, {pcx + 2.0f, pcy + 3.5f}, pInk, 1.5f);
+
+                // Counter "1/3"
+                std::wstring cnt = std::to_wstring(peekIdx + 1) + L"/" + std::to_wstring(peekStack.size());
+                canvas->Text(cnt, Rect(x1 - 76.0f, 8.0f, 30.0f, 18.0f), Weight::Semi, 10.0f, t.accentHi.Alpha(a), Align::Center);
+
+                // Right chevron '>'
+                float ncx = nextB.left + 8.5f, ncy = nextB.top + 9.0f;
+                Color nInk = (peekNextHot ? t.text : t.textDim).Alpha(a);
+                canvas->Line({ncx - 2.0f, ncy - 3.5f}, {ncx + 2.0f, ncy}, nInk, 1.5f);
+                canvas->Line({ncx + 2.0f, ncy}, {ncx - 2.0f, ncy + 3.5f}, nInk, 1.5f);
+            } else if (!peekHot) {
+                canvas->Text(L"now", Rect(x1 - 52.0f, 9.0f, 52.0f, 14.0f), Weight::Regular, 10.0f, t.textDim.Alpha(0.72f * a), Align::Right);
+            }
+
+            canvas->Text(appName, Rect(tx, 9.0f, (std::max)(40.0f, tw - headerRightReserve), 14.0f), Weight::Semi, 10.5f, t.accentHi.Alpha(0.92f * a));
+
+            float titleY = peekDetail.empty() ? iy + 10.0f : 24.0f;
+            canvas->Text(peekTitle, Rect(tx, titleY, tw - (peekHot ? 26.0f : 2.0f), 18.0f), Weight::Semi, 13.0f, t.text.Alpha(a));
+            if (!peekDetail.empty()) {
+                canvas->Text(peekDetail, Rect(tx, 43.0f, tw - 2.0f, 18.0f), Weight::Regular, 11.5f, t.textDim.Alpha(0.92f * a));
+            }
+
+            // Stacked deck divider lip & clean pagination dots when multiple notifications are stacked
+            if (peekStack.size() > 1) {
+                float deckW = inner * 0.72f;
+                canvas->Line({W / 2 - deckW / 2, h - 20.0f}, {W / 2 + deckW / 2, h - 20.0f}, Color{1, 1, 1, 0.08f * a}, 1.0f);
+                int dots = (int)(std::min)(peekStack.size(), (size_t)6);
+                float dotSpan = (dots - 1) * 9.0f;
+                float dx0 = W / 2 - dotSpan / 2;
+                for (int i = 0; i < dots; ++i) {
+                    bool activeDot = (i == peekIdx);
+                    if (activeDot) {
+                        canvas->Fill(Rect(dx0 + i * 9.0f - 4.5f, h - 14.0f, 9.0f, 3.0f), 1.5f, t.accentHi.Alpha(0.95f * a));
+                    } else {
+                        canvas->Dot({dx0 + i * 9.0f, h - 12.5f}, 1.5f, t.textDim.Alpha(0.45f * a));
+                    }
+                }
+            }
+        } else {
+            // Expanded Mode: full untruncated multi-line text + interactive vertical stack list
+            std::wstring hdr = appName;
+            if (peekStack.size() > 1)
+                hdr += L"  ·  " + std::to_wstring(peekIdx + 1) + L" dari " + std::to_wstring(peekStack.size());
+            canvas->Text(hdr, Rect(tx, 9.0f, tw - 30.0f, 15.0f), Weight::Semi, 10.5f, t.accentHi.Alpha(0.95f * a));
+
+            float titleH = (std::max)(18.0f, canvas->MeasureWrap(peekTitle, Weight::Semi, 13.5f, tw - 26.0f) + 2.0f);
+            canvas->TextWrap(peekTitle, Rect(tx, 26.0f, tw - 26.0f, titleH + 4.0f), Weight::Semi, 13.5f, t.text.Alpha(a), false);
+
+            if (!peekDetail.empty()) {
+                float bodyY = 26.0f + titleH + 4.0f;
+                float bodyAvail = (std::max)(18.0f, peekPrimaryBot - bodyY - 4.0f);
+                canvas->TextWrap(peekDetail, Rect(tx, bodyY, tw - 4.0f, bodyAvail), Weight::Regular, 12.0f, t.textDim.Alpha(0.95f * a), false);
+            }
+
+            int rows = PeekShownStackRows();
+            if (rows > 0 && h > peekPrimaryBot + 20.0f) {
+                float stackA = anim::Clamp01((h - peekPrimaryBot - 12.0f) / 28.0f) * a;
+                canvas->Line({x0, peekPrimaryBot}, {x1, peekPrimaryBot}, Color{1, 1, 1, 0.10f * stackA}, 1.0f);
+
+                std::wstring stackLbl = L"Tumpukan notifikasi (" + std::to_wstring(peekStack.size() - 1) + L" lainnya)";
+                canvas->Text(stackLbl, Rect(x0, peekPrimaryBot + 6.0f, inner - 90.0f, 16.0f), Weight::Semi, 10.5f, t.textDim.Alpha(0.85f * stackA));
+
+                D2D1_RECT_F clrBox = Rect(x1 - 82.0f, peekPrimaryBot + 4.0f, 82.0f, 20.0f);
+                canvas->Fill(clrBox, 10.0f, (peekClearHot ? t.accent.Alpha(0.28f) : t.cardHi.Alpha(0.65f)).Alpha(stackA));
+                canvas->Text(L"Hapus semua", clrBox, Weight::Medium, 10.0f, (peekClearHot ? t.accentHi : t.textDim).Alpha(stackA), Align::Center);
+
+                for (int s = 0; s < rows; ++s) {
+                    int rIdx = PeekRowRealIdx(s);
+                    if (rIdx < 0 || rIdx >= (int)peekStack.size()) continue;
+                    const auto& stItem = peekStack[(size_t)rIdx];
+                    D2D1_RECT_F rb = PeekStackRowBox(s);
+                    if (rb.top > h - 10.0f) break;
+
+                    bool rHov = (peekHoverRow == s);
+                    bool rCls = (peekCloseRow == s);
+                    canvas->Fill(rb, 10.0f, (rHov ? t.cardHi.Alpha(0.92f) : t.card.Alpha(0.68f)).Alpha(stackA));
+                    canvas->Stroke(rb, 10.0f, Color{1, 1, 1, (rHov ? 0.18f : 0.08f) * stackA}, 1.0f);
+
+                    D2D1_RECT_F rib = Rect(rb.left + 8.0f, rb.top + 8.0f, 28.0f, 28.0f);
+                    if (stItem.bmp) {
+                        canvas->Art(stItem.bmp.Get(), nullptr, rib, stItem.toast.iconRound ? 14.0f : 7.0f, stackA);
+                    } else {
+                        canvas->Fill(rib, 7.0f, t.accent.Alpha(0.20f * stackA));
+                        canvas->Icon(stItem.toast.iconGlyph ? stItem.toast.iconGlyph : glyph::Bell, {rib.left + 14.0f, rib.top + 14.0f}, 15.0f, t.accentHi.Alpha(stackA), true);
+                    }
+
+                    float rtx = rib.right + 10.0f, rtw = rb.right - rtx - 32.0f;
+                    std::wstring rApp = !stItem.toast.app.empty() ? stItem.toast.app : L"Notification";
+                    std::wstring rTitle = !stItem.toast.title.empty() ? stItem.toast.title : rApp;
+                    std::wstring topLine = !stItem.toast.title.empty() && !stItem.toast.app.empty()
+                        ? (rApp + L" · " + rTitle)
+                        : rTitle;
+                    canvas->Text(topLine, Rect(rtx, rb.top + 6.0f, rtw, 15.0f), Weight::Semi, 11.0f, t.text.Alpha(0.94f * stackA));
+                    if (!stItem.toast.body.empty()) {
+                        canvas->Text(stItem.toast.body, Rect(rtx, rb.top + 22.0f, rtw, 15.0f), Weight::Regular, 10.5f, t.textDim.Alpha(0.85f * stackA));
+                    }
+
+                    D2D1_RECT_F rcb = PeekStackRowCloseBox(s);
+                    if (rHov || rCls) {
+                        canvas->Fill(rcb, 10.0f, (rCls ? t.text.Alpha(0.24f) : t.cardHi.Alpha(0.70f)).Alpha(stackA));
+                    }
+                    canvas->Icon(glyph::Close, {rcb.left + 10.0f, rcb.top + 10.0f}, 11.5f, (rCls ? t.text : t.textDim.Alpha(0.75f)).Alpha(stackA));
+                }
+
+                int hiddenRows = (int)peekStack.size() - 1 - rows;
+                if (hiddenRows > 0) {
+                    float fy = peekPrimaryBot + 28.0f + rows * 48.0f;
+                    std::wstring moreTxt = L"+" + std::to_wstring(hiddenRows) + L" notifikasi lainnya · scroll mouse untuk menggulir";
+                    canvas->Text(moreTxt, Rect(x0, fy, inner, 14.0f), Weight::Regular, 10.0f, t.textDim.Alpha(0.72f * stackA), Align::Center);
+                }
+            }
+        }
+
+        // Bottom handle bar (with subtle hover-dwell progress indicator before expanding)
+        bool canExpand = !peekExpanded && (IsPeekTruncated() || peekStack.size() > 1);
+        float hw = peekHot ? (canExpand ? 42.0f : 32.0f) : 20.0f;
+        canvas->Line({W / 2 - hw / 2, h - 3.5f}, {W / 2 + hw / 2, h - 3.5f}, t.text.Alpha((peekHot ? 0.35f : 0.25f) * a), 2.5f);
+        if (peekHot && canExpand && peekDwellAt > 0) {
+            float dwell = anim::Clamp01((float)((lastFrame - peekDwellAt) / (kPeekDwellMs / 1000.0)));
+            float pw = hw * dwell;
+            if (pw > 1.0f)
+                canvas->Line({W / 2 - pw / 2, h - 3.5f}, {W / 2 + pw / 2, h - 3.5f}, t.accentHi.Alpha(0.95f * a), 2.5f);
+        }
+        canvas->PopClip();
+        return;
+    }
+
+    float cy = h / 2 - 1;
+    D2D1_POINT_2F ic = {x0 + 17, cy};
+    canvas->Dot(ic, 16, t.accent.Alpha(0.18f * a));
+    canvas->Icon(peekIcon ? peekIcon : glyph::Timer, ic, 20, t.accentHi.Alpha(a), true);
+    float tx = x0 + 44, tw = x1 - tx;
+    if (peekLevel >= 0) { // the hud: what changed, a bar and the number
+        float lv = peekLevel;
+        canvas->Text(peekTitle, Rect(tx, cy - 18, tw - 54, 18), Weight::Medium, 13.5f, t.text.Alpha(a));
+        canvas->Text(w::Pct(peekLevel), Rect(x1 - 52, cy - 18, 52, 18), Weight::Medium, 12.5f, t.textDim.Alpha(a), Align::Right);
+        D2D1_RECT_F bar = Rect(tx, cy + 6, tw, 6);
+        canvas->Fill(bar, 3, t.track.Alpha(a));
+        if (lv > 0.01f) canvas->FillH({bar.left, bar.top, bar.left + Width(bar) * lv, bar.bottom}, 3, t.accent.Alpha(a), t.accentHi.Alpha(a));
+    } else {
+        canvas->Text(peekTitle, Rect(tx, cy - 17, tw, 19), Weight::Medium, 13.5f, t.text.Alpha(a));
+        canvas->Text(peekDetail, Rect(tx, cy + 2, tw, 16), Weight::Light, 11.5f, t.textDim.Alpha(a));
+    }
+    canvas->Line({W / 2 - 10, h - 3.5f}, {W / 2 + 10, h - 3.5f}, t.text.Alpha(0.24f * a), 2.5f);
+    canvas->PopClip();
 }
 
 bool Drawer::StepIslandBars(float dt, double now) {

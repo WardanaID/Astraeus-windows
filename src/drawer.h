@@ -28,12 +28,15 @@ public:
 
     bool Create(HINSTANCE instance);
     HWND Hwnd() const { return hwnd; }
+    bool IsOpened() const { return opened; }
     Theme Shell() const { // current palette for the tray menu and prompts: they're solid windows, so glass lends them its dark twin
         return shellNow.glass ? Theme::From(Seed{shellSeed.hue, shellSeed.chroma, theme::TintIsPale(tintNow) ? 1 : 0}) : shellNow;
     }
     void Toggle();
     void KeyOpen(); // from the shortcut: open on the screen with the mouse and take the keyboard, or close
     void Peek(const std::wstring& title, const std::wstring& detail, int icon = 0); // brief notification drop, 0 = timer icon
+    void PeekToast(sys::Toast toast); // rich dynamic island pop-up for an incoming Windows notification
+    void DismissPeek(); // retract the current notification pop-up or show the next queued one
     void SetFull(bool on); // fullscreen app present, stay out of the way
     void SyncHide();
     void OnSecond();
@@ -83,7 +86,7 @@ private:
     bool barOn = false; // pinned: the panel's room is reserved, maximized windows end where it starts
     void Reserve(bool on); // that reservation, as a shell appbar
     static constexpr UINT kBarMsg = WM_APP + 62; // the shell's appbar notices
-    enum : UINT_PTR { kHoverTimer = 1, kCloseTimer, kReleaseTimer, kPeekTimer, kDevTimer, kFollowTimer, kTrimTimer = 8, kFullTimer, kGreetTimer, kDeskTimer, kAdoptTimer, kPasteTimer, kLongTimer }; // all one-shot; 7 is the model's
+    enum : UINT_PTR { kHoverTimer = 1, kCloseTimer, kReleaseTimer, kPeekTimer, kDevTimer, kFollowTimer, kTrimTimer = 8, kFullTimer, kGreetTimer, kDeskTimer, kAdoptTimer, kPasteTimer, kLongTimer, kPeekExpandTimer }; // all one-shot; 7 is the model's
     static constexpr UINT kAdoptMsg = WM_APP + 60; // a hover strip on another screen asks the panel to come over
     static constexpr float kStrip = 3; // idle bezel height in dips, just enough to catch the mouse
     static constexpr UINT kShelfMsg = WM_APP + 61; // the shelf page asked for a drag out, run after the frame: it's modal
@@ -263,7 +266,7 @@ private:
     int inkTick = 0; // seconds toward its next look
     bool Clear() const { return lookNow == Model::kLookClear; }
     bool Frosted() const { return lookNow == 2 || Clear(); } // drawn on the live blur
-    bool ClearPill() const { return Clear() && islandLook && !peeking; } // no body at all: only the ink. a peek brings words to read: glass
+    bool ClearPill() const { return Clear() && islandLook && !peeking && !peekLook; } // no body at all: only the ink. a peek brings words to read: glass
     Color Tint(float k) const; // what keeps the ink readable where the page fights it: smoke, or frost, in the tint's color
     float TintFor(float lum) const; // how much of it, over a page this bright
     void SyncWallTone(); // clear: is the wallpaper dark or light
@@ -313,15 +316,67 @@ private:
 
     static constexpr float kPeekH = 66; // peek banner height in dips
     static constexpr float kPeekSide = 300; // peek reach on a side edge, room for its text
+    static constexpr float kNotifW = 428; // dynamic island notification pop-up width in dips, shoulders included
+    static constexpr float kNotifExpandW = 540; // expanded dynamic island width on hover dwell
+    static constexpr float kNotifH = 92; // dynamic island notification pop-up height for 2-line body
+    static constexpr float kNotifOneH = 78; // dynamic island notification pop-up height for 1-line body
+    static constexpr float kNotifShortH = 66; // dynamic island notification pop-up height for title only
+    static constexpr float kHudW = 320; // compact dynamic island width for HUD and quick notices
+    static constexpr size_t kMaxPeekStack = 6; // max active notifications kept in the Dynamic Island stack
+    static constexpr int kMaxStackRows = 3; // max stacked notification rows shown below the active one when expanded
+    static constexpr UINT kPeekDwellMs = 1200; // hover dwell duration before expanding truncated text / stack
     static constexpr float kIslandH = 34, kIslandW = 260; // island pill size in dips, width includes the shoulders
     static constexpr float kIslandSide = 240; // on a side edge the song runs along the pill like a book spine
     bool islandHot = false; // mouse over the island: show the expand hint
     bool stayWasAlways = false; // the island was set to always last second, to notice it being switched off
     float islandBars[4] = {}; // mini visualizer levels, eased per frame
     anim::Spring spring;
+    anim::Spring widthSpring; // smooth horizontal morphing of the Dynamic Island between pill, compact pop-up, and expanded pop-up
     bool opened = false, dragging = false, peeking = false;
     bool island = false; // island pill is up (or dropping)
     bool islandLook = false; // draw the narrow island shape, until it has fully retracted
+    bool peekLook = false; // draw the dynamic island peek shape, until it has fully retracted
+    bool peekToastNow = false; // the current peek is an incoming Windows notification toast
+    bool peekExpanded = false; // expanded via hover dwell to show full untruncated text and notification stack
+    bool peekHot = false, peekCloseHot = false; // mouse over the notification pop-up or its dismiss button
+    bool peekPrevHot = false, peekNextHot = false, peekClearHot = false; // stack navigation & clear-all hover states
+    int peekHoverRow = -1, peekCloseRow = -1; // hovered row and row-close button in the expanded stack list
+    int peekShownRows = 0; // how many stacked notification rows are shown when expanded
+    double peekDwellAt = 0; // timestamp when hover dwell started
+    ULONGLONG lastToastSoundAt = 0; // throttle chime on rapid notification bursts
+    float peekReach = kPeekH; // target depth of the current peek
+    float peekPrimaryBot = 62; // bottom y of the primary notification section when expanded
+    struct PeekItem {
+        sys::Toast toast;
+        ComPtr<ID2D1Bitmap1> bmp;
+    };
+    std::vector<PeekItem> peekStack; // active notification stack (0 = newest)
+    int peekIdx = 0; // currently focused notification in peekStack
+    sys::Toast peekToast;
+    ComPtr<ID2D1Bitmap1> peekBmp; // app/sender icon for the current notification pop-up
+    float PeekSpan() const {
+        if (Side()) return kIslandSide;
+        float cap = W > 0 ? W : kNotifExpandW;
+        if (!peekToastNow) return (std::min)(kHudW, cap);
+        return peekExpanded ? (std::min)(kNotifExpandW, (std::max)(kNotifW, cap)) : (std::min)(kNotifW, cap);
+    }
+    float ActivePeekSpan() const {
+        float target = PeekSpan();
+        return widthSpring.value > 1.0f && peekToastNow ? (std::min)(W > 0 ? W : target, (std::max)(kNotifW, widthSpring.value)) : target;
+    }
+    D2D1_RECT_F PeekCloseBox(float h) const;
+    D2D1_RECT_F PeekPrevBox() const;
+    D2D1_RECT_F PeekNextBox() const;
+    D2D1_RECT_F PeekClearBox() const;
+    D2D1_RECT_F PeekStackRowBox(int rowSlot) const;
+    D2D1_RECT_F PeekStackRowCloseBox(int rowSlot) const;
+    int PeekRowRealIdx(int rowSlot) const;
+    int PeekShownStackRows() const;
+    bool IsPeekTruncated() const;
+    void SyncPeekFields();
+    void UpdatePeekLayout();
+    void StepPeekStack(int delta);
+    void DismissPeekItem(int idx);
     bool grow = false; // panel is expanding out of the island, width morphs
     bool islandNext = false; // the pending hover should raise the island, not the panel
     float winW = 0; // current window length along the edge in dips

@@ -82,6 +82,8 @@ public:
     void FillH(const D2D1_RECT_F& r, float radius, Color left, Color right);
 
     void Text(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, Align a = Align::Left);
+    void TextWrap(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, bool ellipsis = true); // multi-line top-aligned word wrap
+    float MeasureWrap(const std::wstring& s, Weight w, float size, float maxW, int* outLines = nullptr); // wrapped height in dips for maxW
     float TextOnce(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c); // never cached (secrets); returns the drawn width
     float Measure(const std::wstring& s, Weight w, float size); // a single line's width in dips, from the same cached layouts Text draws
     void TextSp(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, float spacing, Align a = Align::Left);

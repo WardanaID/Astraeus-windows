@@ -7,6 +7,7 @@
 #include "glyphs.h"
 #include "sports.h"
 #include "duration.h"
+#include "notifs.h"
 #include "pages.h"
 #include "picker.h"
 #include <shellapi.h>
@@ -127,7 +128,7 @@ Model::Model(const Config& c) : cfg(c), portable(sys::IsPortable()), look(sys::R
     accentMode = (std::clamp)(sys::ReadNum(L"AccentMode", cfg.wallTheme ? 0 : 1), 0, kAccentWindows); // settings override the ini once used
     if (accentMode == kAccentWindows) winAccentHex = winAccent.Read();
     accentHex = sys::ReadNum(L"AccentHex", iniHex) & 0xFFFFFF;
-    notifyPills = (std::clamp)(sys::ReadNum(L"NotifyPills", 0), 0, 1);
+    notifyPills = (std::clamp)(sys::ReadNum(L"NotifyPills", 1), 0, 1); // on by default: move windows notifications to dynamic island pop-up
     quiet = sys::ReadNum(kQuietVal, 0) ? 1 : 0; // missing means off
     fullLyrics = (std::clamp)(sys::ReadNum(L"FullLyrics", 1), 0, 1);
     BOOL anim = TRUE;
@@ -243,6 +244,12 @@ void Model::CommitShelfNote() {
 }
 
 Model::~Model() {
+    notifyWatch.Stop();
+    if (bannersTaken || sys::ReadNum(L"BannersTaken", 0) != 0) {
+        if (!quiet) sys::SetDoNotDisturb(false); // restore Windows' own notification banners when Astraeus exits
+        sys::SaveNum(L"BannersTaken", 0);
+        bannersTaken = false;
+    }
     {
         std::lock_guard<std::mutex> guard(lock);
         quit = true; // set under lock so worker sees it
@@ -949,6 +956,16 @@ void Model::SetQuiet(bool on) {
 
 void Model::SyncNotify() {
     bool want = PillsWanted() && notify;
+    bool suppressWinBanners = notify && (notifyPills || haloPills || quiet);
+    if (suppressWinBanners && (!bannersTaken || !sys::DoNotDisturb())) {
+        sys::SetDoNotDisturb(true); // suppress built-in Windows notification banners so they only appear in the Dynamic Island
+        sys::SaveNum(L"BannersTaken", 1);
+        bannersTaken = true;
+    } else if (!suppressWinBanners && (bannersTaken || sys::ReadNum(L"BannersTaken", 0) != 0)) {
+        sys::SetDoNotDisturb(false); // restore built-in Windows notification banners when turned off
+        sys::SaveNum(L"BannersTaken", 0);
+        bannersTaken = false;
+    }
     if (want == watching) return; // only on a change: starting asks windows for access, not something to repeat every second
     watching = want;
     if (want) notifyWatch.Start(notify, WM_APP_NOTIFY);

@@ -311,13 +311,27 @@ std::wstring ResolveImage(std::string_view src, const std::wstring& aumid) {  //
     return {};
 }
 
-std::string_view LogoSrc(std::string_view b) {  // <image placement="appLogoOverride" src=...>
+std::string_view LogoSrc(std::string_view b, bool& round) {  // <image placement="appLogoOverride" src=...>
+    round = false;
+    std::string_view fallback;
+    bool fbRound = false;
     for (size_t p = 0; (p = b.find("<image", p)) != std::string_view::npos; p += 6) {
         if (!IsTag(b, p, "<image")) continue;
         std::string_view tag = StartTag(b, p);
-        if (Attr(tag, "placement") == "appLogoOverride") return Attr(tag, "src");
+        std::string_view src = Attr(tag, "src");
+        if (src.empty()) continue;
+        bool circle = Attr(tag, "hint-crop") == "circle";
+        if (Attr(tag, "placement") == "appLogoOverride") {
+            round = circle;
+            return src;
+        }
+        if (fallback.empty() && Attr(tag, "placement") != "hero") {
+            fallback = src;
+            fbRound = circle;
+        }
     }
-    return {};
+    round = fbRound;
+    return fallback;
 }
 
 std::string_view Payload(const void* data, int bytes, std::string& scratch) {  // handles utf-8 (with or without bom) and utf-16le
@@ -338,6 +352,11 @@ bool Parse(std::string_view xml, const std::wstring& aumid, Notif& n) {  // fals
     while (t != std::string_view::npos && !IsTag(xml, t, "<toast")) t = xml.find("<toast", t + 6);
     if (t == std::string_view::npos) return false;  // not a toast payload
     n.launch = Wide(Decode(Attr(StartTag(xml, t), "launch")));  // what the app wants back when its toast is clicked
+    for (size_t a = t; (a = xml.find("<audio", a)) != std::string_view::npos; a += 6) {
+        if (!IsTag(xml, a, "<audio")) continue;
+        if (Attr(StartTag(xml, a), "silent") == "true") n.silent = true;
+        break;
+    }
     std::string_view b = Binding(xml.substr(t));
     std::vector<std::string> texts = Texts(b);
     if (texts.empty()) return false;  // image-only or progress shells; nothing to read
@@ -348,7 +367,7 @@ bool Parse(std::string_view xml, const std::wstring& aumid, Notif& n) {  // fals
         body += texts[i];
     }
     n.body = Cap(Wide(body), kBodyCap);
-    n.image = ResolveImage(Decode(LogoSrc(b)), aumid);
+    n.image = ResolveImage(Decode(LogoSrc(b, n.iconRound)), aumid);
     return true;
 }
 
@@ -471,6 +490,57 @@ std::wstring ShellName(const std::wstring& aumid) {  // needs com; initialise he
     return name;
 }
 
+bool ShellPixels(const std::wstring& parsingName, UINT sizePx, std::vector<uint32_t>& px, unsigned& w, unsigned& h) {
+    IShellItemImageFactory* fac = nullptr;
+    if (FAILED(SHCreateItemFromParsingName(parsingName.c_str(), nullptr, IID_PPV_ARGS(&fac))) || !fac) return false;
+    HBITMAP bmp = nullptr;
+    HRESULT hr = fac->GetImage({static_cast<LONG>(sizePx), static_cast<LONG>(sizePx)}, SIIGBF_RESIZETOFIT, &bmp);
+    fac->Release();
+    if (FAILED(hr) || !bmp) return false;
+    BITMAP bm{};
+    GetObjectW(bmp, sizeof(bm), &bm);
+    bool ok = bm.bmWidth > 0 && bm.bmHeight > 0 && bm.bmWidth <= 256 && bm.bmHeight <= 256;
+    if (ok) {
+        w = static_cast<unsigned>(bm.bmWidth);
+        h = static_cast<unsigned>(bm.bmHeight);
+        px.assign(static_cast<size_t>(w) * h, 0);
+        BITMAPINFO bi{};
+        bi.bmiHeader = {sizeof(BITMAPINFOHEADER), bm.bmWidth, -bm.bmHeight, 1, 32, BI_RGB};  // top-down 32bpp bgra
+        HDC dc = GetDC(nullptr);
+        ok = GetDIBits(dc, bmp, 0, h, px.data(), &bi, DIB_RGB_COLORS) == static_cast<int>(h);
+        ReleaseDC(nullptr, dc);
+    }
+    DeleteObject(bmp);
+    if (!ok) {
+        px.clear();
+        w = h = 0;
+        return false;
+    }
+    bool alpha = std::any_of(px.begin(), px.end(), [](uint32_t p) { return (p >> 24) != 0; });
+    bool straight = alpha && std::any_of(px.begin(), px.end(), [](uint32_t p) {
+        uint32_t a = p >> 24;
+        return a > 0 && a < 255 && (((p >> 16) & 0xFF) > a || ((p >> 8) & 0xFF) > a || (p & 0xFF) > a);
+    });
+    for (uint32_t& p : px) {
+        if (!alpha) {
+            p |= 0xFF000000u;
+            continue;
+        }
+        uint32_t a = p >> 24, r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+        if (straight) {
+            r = (r * a + 127) / 255;
+            g = (g * a + 127) / 255;
+            b = (b * a + 127) / 255;
+        } else {
+            r = (std::min)(r, a);
+            g = (std::min)(g, a);
+            b = (std::min)(b, a);
+        }
+        p = (a << 24) | (r << 16) | (g << 8) | b;
+    }
+    return true;
+}
+
 bool LooksLikeUri(const std::wstring& s) {  // "scheme:rest", no spaces, not a drive letter or a file/shell launch
     size_t colon = s.find(L':');
     if (colon < 2 || colon == std::wstring::npos || colon + 1 >= s.size()) return false;
@@ -561,6 +631,56 @@ std::wstring AppNameOf(const std::wstring& aumid) noexcept {
     }
 }
 
+bool ReadNotifIcon(const Notif& n, std::vector<uint32_t>& px, unsigned& w, unsigned& h, bool& round) noexcept {
+    px.clear();
+    w = h = 0;
+    round = false;
+    try {
+        HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (!n.image.empty() && ShellPixels(n.image, 64, px, w, h)) {
+            round = n.iconRound;
+            if (SUCCEEDED(co)) CoUninitialize();
+            return true;
+        }
+        if (n.aumid.empty()) {
+            if (SUCCEEDED(co)) CoUninitialize();
+            return false;
+        }
+        struct CachedIcon {
+            std::vector<uint32_t> px;
+            unsigned w = 0, h = 0;
+        };
+        static std::mutex lock;
+        static std::unordered_map<std::wstring, CachedIcon> cache;
+        {
+            std::lock_guard<std::mutex> g(lock);
+            auto it = cache.find(n.aumid);
+            if (it != cache.end()) {
+                px = it->second.px;
+                w = it->second.w;
+                h = it->second.h;
+                if (SUCCEEDED(co)) CoUninitialize();
+                return !px.empty();
+            }
+        }
+        CachedIcon ci;
+        if (!ShellPixels(kAppsFolder + n.aumid, 64, ci.px, ci.w, ci.h) && n.aumid.find_first_of(L"\\/") != std::wstring::npos)
+            ShellPixels(n.aumid, 64, ci.px, ci.w, ci.h);
+        if (SUCCEEDED(co)) CoUninitialize();
+        std::lock_guard<std::mutex> g(lock);
+        if (cache.size() >= 64) cache.clear();
+        cache.emplace(n.aumid, ci);
+        px = std::move(ci.px);
+        w = ci.w;
+        h = ci.h;
+        return !px.empty();
+    } catch (...) {
+        px.clear();
+        w = h = 0;
+        return false;
+    }
+}
+
 // windows 11's real do-not-disturb has no public api: its state is an undocumented binary wnf blob
 // (WNF_SHEL_QUIETHOURS_*) plus cloudstore data, and writing those wrong can wedge the quick settings toggle.
 // instead this is the documented-in-practice master switch that settings > notifications writes: ToastEnabled = 0
@@ -568,7 +688,9 @@ std::wstring AppNameOf(const std::wstring& aumid) noexcept {
 // it doesn't show the moon glyph in windows' own ui, and it doesn't reflect dnd turned on from quick settings.
 bool SetDoNotDisturb(bool on) noexcept {
     DWORD v = on ? 0 : 1;  // inverted: the value means "toasts enabled"
-    return RegSetKeyValueW(HKEY_CURRENT_USER, kPushKey, L"ToastEnabled", REG_DWORD, &v, sizeof(v)) == ERROR_SUCCESS;
+    bool ok = RegSetKeyValueW(HKEY_CURRENT_USER, kPushKey, L"ToastEnabled", REG_DWORD, &v, sizeof(v)) == ERROR_SUCCESS;
+    if (ok) SendNotifyMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"Windows.Data.UnifiedActionCenter"));
+    return ok;
 }
 
 bool DoNotDisturb() noexcept {
