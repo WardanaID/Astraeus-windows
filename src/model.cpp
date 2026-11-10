@@ -902,7 +902,11 @@ void Model::CommitName() {
     nameFor = -1;
 }
 
-void Model::CloseCal() { calOpen = false; }
+void Model::CloseCal() {
+    calOpen = false;
+    calFocus = false;
+    calErr = false;
+}
 
 void Model::StartCalWait(bool google) {
     if (!calWaiting) AddClipboardFormatListener(notify); // the link the user copies next, from any app, is the one
@@ -913,10 +917,52 @@ void Model::StartCalWait(bool google) {
 }
 
 void Model::StopCalWait() {
+    calFocus = false;
+    calErr = false;
     if (!calWaiting) return;
     RemoveClipboardFormatListener(notify);
     KillTimer(notify, kCalWaitTimer);
     calWaiting = false;
+}
+
+bool Model::CommitCalUrl() {
+    if (calEdit.empty()) {
+        calFocus = false;
+        calErr = false;
+        return false;
+    }
+    if (!cals.Add(calEdit, notify, WM_APP_CAL)) {
+        calErr = true;
+        calFocus = true;
+        return false;
+    }
+    calEdit.clear();
+    calFocus = false;
+    calErr = false;
+    StopCalWait();
+    calLinks = false;
+    return true;
+}
+
+bool Model::PasteCalClipboard() {
+    std::wstring raw = sys::ClipText();
+    std::wstring line;
+    for (wchar_t c : raw) {
+        if (c == L'\r' || c == L'\n') break;
+        if (c >= 32 && line.size() < 2048) line += c;
+    }
+    size_t b = line.find_first_not_of(L" \t");
+    size_t e = line.find_last_not_of(L" \t");
+    line = b == std::wstring::npos ? L"" : line.substr(b, e - b + 1);
+    if (line.empty()) {
+        calErr = true;
+        calFocus = true;
+        return false;
+    }
+    calEdit = line;
+    calErr = false;
+    calFocus = true;
+    return CommitCalUrl();
 }
 
 bool Model::OnClipboard() {
@@ -934,6 +980,7 @@ bool Model::OnClipboard() {
     }
     CloseClipboard();
     if (!sys::cal::Calendars::LooksLikeCalendar(text) || !cals.Add(text, notify, WM_APP_CAL)) return false; // anything else copied meanwhile is left alone
+    calEdit.clear();
     StopCalWait();
     calLinks = false;
     return true;

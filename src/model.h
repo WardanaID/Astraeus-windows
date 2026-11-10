@@ -305,7 +305,7 @@ public:
     bool passFocus = false, passShow = false, passWrong = false; // the wi-fi password field: taking keystrokes, shown in clear, last try failed
     std::string passFor; // raw ssid of the network being joined
     std::wstring passEdit; // what's typed so far, wiped once used
-    bool Typing() const { return hexFocus || passFocus || cityFocus || faceKeys || faceSearch || nameFor >= 0 || field != kFieldNone || shelfField != kShelfNone; } // the panel holds the keyboard
+    bool Typing() const { return hexFocus || passFocus || cityFocus || calFocus || faceKeys || faceSearch || nameFor >= 0 || field != kFieldNone || shelfField != kShelfNone; } // the panel holds the keyboard
     void AskPass(const sys::WifiNet& n); // a new secured network: type its password in the panel
     void SubmitPass();
     void CancelPass();
@@ -322,8 +322,13 @@ public:
     sys::cal::Calendars cals; // the user's own calendars from their private links, shared with halobar
     bool calAgenda = false, calLinks = false; // the sheet shows the picked day's events / the connected calendars, in the month's place
     bool calWaiting = false; // "connect" was pressed: the next calendar link copied anywhere is taken
+    bool calFocus = false; // the iCal URL field in Calendar links is taking keystrokes
+    std::wstring calEdit; // the iCal URL typed or pasted so far
+    bool calErr = false; // true when the submitted iCal URL was invalid
     void StartCalWait(bool google);
     void StopCalWait();
+    bool CommitCalUrl(); // validates calEdit via cals.Add; clears calEdit and closes links on success
+    bool PasteCalClipboard(); // reads clipboard text into calEdit and tries to connect immediately
     bool OnClipboard(); // true when a calendar link was taken
     static constexpr UINT_PTR kCalWaitTimer = 7; // the drawer's timer that ends the wait
     int reduceMotion = 0; // calmer animation: no bounce, no drifting, no sliding

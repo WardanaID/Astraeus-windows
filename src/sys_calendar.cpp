@@ -697,6 +697,7 @@ bool Calendars::LooksLikeCalendar(const std::wstring& text, std::wstring* url) {
     std::wstring s = text.substr(b, e - b + 1);
     if (s.size() > 2048 || s.find_first_of(L" \t\r\n") != std::wstring::npos) return false;
     if (s.rfind(L"webcal://", 0) == 0) s = L"https://" + s.substr(9);
+    else if (s.rfind(L"webcals://", 0) == 0) s = L"https://" + s.substr(10);
     if (s.rfind(L"https://", 0) != 0) return false;
     std::wstring lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
