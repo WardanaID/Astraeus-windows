@@ -178,8 +178,11 @@ void Drawer::ApplyPlace() {
     pinNow = model.pinned != 0;
     floatNow = model.floating != 0;
     if (!screensNow) mon = sys::FindScreen(screenNow); // one screen: the picked one, primary if none
-    island = islandLook = false; // a resting pill goes with the old edge; the next second brings it back on the new one
+    island = islandLook = zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false; // a resting pill goes with the old edge; the next second brings it back on the new one
     spring = anim::Spring{};
+    zoomSpring = anim::Spring{};
+    zoomAlpha = zoomInvScale = 1.0f;
+    zoomBodyXform = D2D1::Matrix3x2F::Identity();
     winH = wantH = kStrip; // Place keeps the window this deep: the plain strip, never an empty pill-deep band
     FreeDev(); // swapchain is sized for the old edge
     Place();
@@ -343,6 +346,10 @@ void Drawer::Retract() { // the open panel and every hover state gone at once, n
         KillTimer(hwnd, kCloseTimer);
         KillTimer(hwnd, kPeekTimer);
         armed = peeking = dragging = island = islandLook = grow = false;
+        zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
+        zoomSpring = anim::Spring{};
+        zoomAlpha = zoomInvScale = 1.0f;
+        zoomBodyXform = D2D1::Matrix3x2F::Identity();
         if (GetCapture() == hwnd) ReleaseCapture(); // mid-drag when the game took over
         if (opened) { // same teardown as Close, minus the animation
             opened = false;

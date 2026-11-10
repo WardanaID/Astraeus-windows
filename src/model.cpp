@@ -133,6 +133,8 @@ Model::Model(const Config& c) : cfg(c), portable(sys::IsPortable()), look(sys::R
     BOOL anim = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0); // windows' own "animation effects": off means start calm
     reduceMotion = (std::clamp)(sys::ReadNum(L"ReduceMotion", anim ? 0 : 1), 0, 1);
+    openAnim = (std::clamp)(sys::ReadNum(L"OpenAnim", kAnimZoom), 0, kOpenAnims - 1);
+    animSpeed = (std::clamp)(sys::ReadNum(L"AnimSpeed", kSpeedBalanced), 0, kAnimSpeeds - 1);
     auto flag = [](const wchar_t* key, int fallback) { return sys::ReadNum(key, fallback) ? 1 : 0; };
     powerPills = flag(L"PowerPills", 1);
     batLow = (std::clamp)(sys::ReadNum(L"BatteryLow", 20), 5, 50);

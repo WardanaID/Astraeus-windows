@@ -513,7 +513,7 @@ ComPtr<ID2D1Geometry> Drawer::Shape(float h, float w) {
     return shapeC;
 }
 
-ComPtr<ID2D1Geometry> Drawer::BuildShape(float h, float w) const {
+ComPtr<ID2D1Geometry> Drawer::BuildShape(float h, float w, float floatTopGap) const {
     ComPtr<ID2D1PathGeometry> path;
     ComPtr<ID2D1GeometrySink> s;
     if (FAILED(gfx::D2D()->CreatePathGeometry(&path)) || FAILED(path->Open(&s))) return nullptr;
@@ -521,7 +521,9 @@ ComPtr<ID2D1Geometry> Drawer::BuildShape(float h, float w) const {
     float left = (Span() - w) / 2;
     float xr = left + w - cfg.fillet, xl = left + cfg.fillet; // panel edges inside the fillet margins
     if (Floating() && !islandLook && !peeking) { // a card clear of the edge: it slides in from past it, rounded all round
-        float top = h - Depth() + kFloatGap, rr = (std::min)(cfg.corner, (xr - xl) / 2);
+        float top = floatTopGap >= 0.0f ? floatTopGap : (h - Depth() + kFloatGap);
+        float rr = (std::min)(cfg.corner, (xr - xl) / 2);
+        rr = (std::min)(rr, (std::max)(2.0f, (h - top) / 2));
         ComPtr<ID2D1RoundedRectangleGeometry> card;
         if (FAILED(gfx::D2D()->CreateRoundedRectangleGeometry(D2D1::RoundedRect({xl, top, xr, h}, rr, rr), &card))) return nullptr;
         return card;
@@ -549,18 +551,24 @@ D2D1_POINT_2F Drawer::BodyOrg(float h) const {
 void Drawer::DrawBody(float h, float dt, double now) {
     float panelW = CW(), panelH = CH();
     D2D1_POINT_2F org = BodyOrg(h);
-    D2D1_MATRIX_3X2_F base = D2D1::Matrix3x2F::Translation(org.x, org.y);
+    D2D1_MATRIX_3X2_F base = D2D1::Matrix3x2F::Translation(org.x, org.y) * zoomBodyXform;
     ctx->SetTransform(base);
     canvas->PushClip(edgeNow == 0 ? D2D1_RECT_F{0, H - h, panelW, H} : edgeNow == 1 ? D2D1_RECT_F{panelW - h, 0, panelW, panelH} : D2D1_RECT_F{0, 0, h, panelH});
     float reach = Depth();
-    float reveal = anim::Clamp01((h - reach * 0.25f) / (reach * 0.55f)); // fade content in from 25% to 80% of the way out
+    float reveal = zoomActive ? zoomAlpha : anim::Clamp01((h - reach * 0.25f) / (reach * 0.55f)); // fade content in from 25% to 80% of the way out
     bool layered = reveal < 0.999f; // skip costly layer once fully shown
     if (layered) ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                                        D2D1::IdentityMatrix(), reveal), nullptr);
 
     Input local = input;
-    local.mouse = {input.mouse.x - org.x, input.mouse.y - org.y}; // mouse into panel space
-    local.pressPos = {input.pressPos.x - org.x, input.pressPos.y - org.y};
+    auto toPanel = [&](D2D1_POINT_2F pt) -> D2D1_POINT_2F {
+        D2D1_POINT_2F q = (zoomActive && zoomInvScale != 1.0f)
+            ? D2D1_POINT_2F{zoomAnchor.x + (pt.x - zoomAnchor.x) * zoomInvScale, zoomAnchor.y + (pt.y - zoomAnchor.y) * zoomInvScale}
+            : pt;
+        return {q.x - org.x, q.y - org.y};
+    };
+    local.mouse = toPanel(input.mouse); // mouse into panel space
+    local.pressPos = toPanel(input.pressPos);
     ui.Begin(*canvas, local, dt, now);
     bool touring = tourStep >= 0; // the tour is up: the panel shows, only its card takes a press
     ui.Block(touring);
