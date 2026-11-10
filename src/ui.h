@@ -62,6 +62,11 @@ public:
 
     Canvas& C() { return *canvas; }
     const Input& In() const { return in; }
+    Input SwapInput(const Input& next) {
+        Input prev = in;
+        in = next;
+        return prev;
+    }
     float Dt() const { return dt; }
     double Now() const { return now; }
 

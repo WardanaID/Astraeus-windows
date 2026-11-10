@@ -603,44 +603,91 @@ void Drawer::DrawBody(float h, float dt, double now) {
     railHot = opened && !fieldFocus && Inside(RailBox(), local.mouse);
     D2D1_RECT_F area = Tall() ? D2D1_RECT_F{14, kTopRail + 10, panelW - 14, panelH - 14} : D2D1_RECT_F{kRailW + 14, 18, panelW - 20, H - 20};
 
-    if (pageT < 1) pageT = (std::min)(1.0f, pageT + dt / 0.38f); // 380ms page switch
-    float e = anim::EaseOut(pageT);
-    float slide = (1 - e) * (model.reduceMotion ? 0 : 26) * (model.SlotOf(page) > model.SlotOf(prevPage) ? 1 : -1); // slide 26 dips in the nav direction down the rail; calm: a crossfade
+    static constexpr float kPageSec[Model::kAnimSpeeds] = {0.26f, 0.36f, 0.48f};
+    float dur = model.reduceMotion ? 0.22f : kPageSec[(std::clamp)(model.animSpeed, 0, Model::kAnimSpeeds - 1)];
+    if (pageT < 1) pageT = (std::min)(1.0f, pageT + dt / dur);
+    float e = anim::Bezier(0.18f, 0.96f, 0.24f, 1.0f, pageT);
+    bool pageSwitching = pageT < 0.999f && page != prevPage && !zoomActive && model.HasPage(prevPage);
+    bool swipe = !model.reduceMotion && model.pageAnim == Model::kPageSwipe && pageSwitching;
+    int slotNew = model.SlotOf(page), slotOld = model.SlotOf(prevPage);
+    float dir = (slotNew >= 0 && slotOld >= 0 && slotNew != slotOld) ? (slotNew > slotOld ? 1.0f : -1.0f) : 1.0f;
+    float travel = swipe ? (std::min)(144.0f, Height(area) * 0.46f) : 0.0f;
+    float outY = -e * dir * travel;
+    float inY = (1.0f - e) * dir * travel;
     float sheet = ui.Smooth(Ui::Id("bt.sheet"), model.btOpen ? 1.0f : 0, 14); // bt menu open anim
     float wsheet = ui.Smooth(Ui::Id("wifi.sheet"), model.wifiOpen ? 1.0f : 0, 14); // wi-fi picker open anim
     float ssheet = ui.Smooth(Ui::Id("set.sheet"), model.settingsOpen ? 1.0f : 0, 14); // settings open anim
     float csheet = ui.Smooth(Ui::Id("cal.sheet"), model.calOpen ? 1.0f : 0, 14); // calendar open anim
     float msheet = ui.Smooth(Ui::Id("mix.sheet"), model.mixerOpen ? 1.0f : 0, 14); // volume mixer open anim
     float under = 1 - anim::Clamp01((std::max)((std::max)((std::max)(sheet, wsheet), (std::max)(ssheet, csheet)), msheet) * 1.6f); // the page fades out as a sheet fades in, a crossfade, not a stack
-    float pageAlpha = e * under;
-    bool fading = pageAlpha < 0.999f;
-    ctx->SetTransform(D2D1::Matrix3x2F::Translation(0, slide) * base);
-    if (fading) ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                                      D2D1::IdentityMatrix(), pageAlpha), nullptr); // opacity follows slide and sheets
+
+    float inAlpha = (pageT < 0.999f ? (swipe ? anim::Clamp01(0.12f + 0.88f * e) : anim::Clamp01((e - 0.10f) / 0.90f)) : 1.0f) * under;
+    float outAlpha = pageSwitching ? (swipe ? anim::Clamp01(1.0f - e * 1.15f) : anim::Clamp01(1.0f - e * 2.1f)) * under : 0.0f;
+
     float fade = ui.SmoothFrom(Ui::Id("cover.fade", (int)coverId), 1, 0, 6); // id per cover restarts fade on track change
     bool art = model.showArt != 0; // album art off: placeholders and plain cards
-    PageCtx pc{ui, model, shellNow, mediaNow, art ? cover.Get() : nullptr, art ? coverBlur.Get() : nullptr, fade,
-                   D2D1_RECT_F{area.left, area.top - slide, area.right, area.bottom - slide}}; // undo slide so hit rects stay put
+    if (page != pageDrawn) pageDrawn = page, ++model.pageVisit;
+    if (page != Model::kPgWidgets) model.faceSearch = false; // left the gallery: the keyboard goes back
+
+    auto drawPage = [&](int pid, PageCtx& ctxPage) {
+        switch (pid) {
+        case Model::kPgHome: DrawHome(ctxPage); break;
+        case Model::kPgMedia: DrawMedia(ctxPage); break;
+        case Model::kPgSystem: DrawSys(ctxPage); break;
+        case Model::kPgNetwork: DrawNet(ctxPage); break;
+        case Model::kPgTools: DrawTools(ctxPage); break;
+        case Model::kPgWidgets: DrawWidgetsPage(ctxPage); break;
+        default: DrawShelf(ctxPage); break;
+        }
+    };
+
+    if (pageSwitching) {
+        ctx->SetTransform(base);
+        canvas->PushClip(Tall() ? D2D1_RECT_F{2.0f, kTopRail + 2.0f, panelW - 2.0f, panelH - 4.0f}
+                                : D2D1_RECT_F{kRailW + 2.0f, 4.0f, panelW - 2.0f, panelH - 4.0f});
+    }
+
+    if (outAlpha > 0.01f) {
+        Input parked{};
+        Input prevIn = ui.SwapInput(parked);
+        bool wasBlocked = ui.Blocked();
+        ui.Block(true);
+        PageCtx pcOut{ui, model, shellNow, mediaNow, art ? cover.Get() : nullptr, art ? coverBlur.Get() : nullptr, fade, area};
+        pcOut.backdrop = backA;
+        ctx->SetTransform(D2D1::Matrix3x2F::Translation(0, outY) * base);
+        ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                              D2D1::IdentityMatrix(), outAlpha), nullptr);
+        drawPage(prevPage, pcOut);
+        ctx->PopLayer();
+        ui.Block(wasBlocked);
+        ui.SwapInput(prevIn);
+    }
+
+    bool fading = inAlpha < 0.999f;
+    ctx->SetTransform(D2D1::Matrix3x2F::Translation(0, inY) * base);
+    if (fading) ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                      D2D1::IdentityMatrix(), inAlpha), nullptr);
+    PageCtx pc{ui, model, shellNow, mediaNow, art ? cover.Get() : nullptr, art ? coverBlur.Get() : nullptr, fade, area};
     pc.flip = coverPrev ? ui.SmoothFrom(Ui::Id("cover.flip", (int)coverId), 1, 0, kFlipRate) : 1;
     pc.coverPrev = art && pc.flip < 0.5f ? coverPrev.Get() : nullptr;
     if (pc.flip > 0.999f) coverPrev.Reset(); // turned: the old one can go
     pc.backdrop = backA;
-    if (page != pageDrawn) pageDrawn = page, ++model.pageVisit;
-    if (page != Model::kPgWidgets) model.faceSearch = false; // left the gallery: the keyboard goes back
     ui.Block(touring || sheet > 0.01f || wsheet > 0.01f || ssheet > 0.01f || csheet > 0.01f || msheet > 0.01f); // page under a sheet takes no input
-    if (under > 0.001f) { // a sheet that has taken over hides the page, skip drawing it
-        switch (page) {
-        case Model::kPgHome: DrawHome(pc); break;
-        case Model::kPgMedia: DrawMedia(pc); break;
-        case Model::kPgSystem: DrawSys(pc); break;
-        case Model::kPgNetwork: DrawNet(pc); break;
-        case Model::kPgTools: DrawTools(pc); break;
-        case Model::kPgWidgets: DrawWidgetsPage(pc); break;
-        default: DrawShelf(pc); break;
+    if (inAlpha > 0.004f && under > 0.001f) {
+        Input shifted = ui.In();
+        Input savedIn{};
+        bool didShift = inY != 0.0f;
+        if (didShift) {
+            shifted.mouse.y -= inY;
+            shifted.pressPos.y -= inY;
+            savedIn = ui.SwapInput(shifted);
         }
+        drawPage(page, pc);
+        if (didShift) ui.SwapInput(savedIn);
     }
     if (fading) ctx->PopLayer();
     ctx->SetTransform(base);
+    if (pageSwitching) canvas->PopClip();
     ui.Block(touring); // the sheets themselves take input
     if (page == Model::kPgTools && under > 0.001f) tourSpots[3] = pc.spotSettings; // empty when its tile is taken off
     if (Width(pc.spotTiles) > 0) tourSpots[0] = pc.spotTiles;
