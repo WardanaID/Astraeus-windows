@@ -705,6 +705,26 @@ void DeskPill::Want(bool up, HMONITOR on) {
     Poke();
 }
 
+bool DeskPill::Visible() const { return hwnd && IsWindowVisible(hwnd) && appear.value > 0.5f; }
+
+void DeskPill::HideNow() { // hide immediately when Zoom Fade opens so the two windows never overlap
+    if (Editing() || !hwnd) return;
+    wantUp = false;
+    appear = anim::Spring{};
+    ShowWindow(hwnd, SW_HIDE);
+    FreeDev();
+    gfx::GiveBack();
+    dirty = false;
+    lastFrame = 0;
+}
+
+bool DeskPill::MorphShape(int edgeWant, float& lenOut, float& thickOut) const {
+    if (spec.edge != edgeWant || !Visible()) return false;
+    lenOut = rest.len > 1.0f ? rest.len : Sh().len;
+    thickOut = rest.thick > 1.0f ? rest.thick : spec.thick;
+    return true;
+}
+
 void DeskPill::Second() {
     if (studio && editing) Poke(); // the clocks in it tick
     if (!wantUp || Editing()) return;

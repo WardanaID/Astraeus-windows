@@ -64,6 +64,7 @@ private:
     std::unique_ptr<DeskPill> desk; // the long pill: its own window, on its own edge
     bool pillView = false; // nothing of an app's lies under it
     bool longHeld = false; // it's standing in for the small pill over an app: called by a hover, or held by the stay rules
+    bool WantLongPill() const; // desktop or apps should currently wear the long pill
     void SyncDesk(); // it comes or goes with the desktop, the panel and fullscreen apps
     void WidgetStudio(); // the widgets, tools tiles or pages, arranged and added to over the wallpaper
     void DeskEdit(int from = Model::kEditFromLong); // the editor, on this screen; the panel and the island step aside. from: which pill asked

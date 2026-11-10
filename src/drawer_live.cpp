@@ -271,11 +271,17 @@ void Drawer::BoardKey() { // the screen under the mouse: its dashboard steps asi
     }
 }
 
+bool Drawer::WantLongPill() const {
+    if (!desk || !deskOn) return false;
+    bool appsLong = model.deskApps && longHeld && !(deskView && !model.LongPill()); // held over an app: back on a desktop that wears the regular pill, it lets go
+    return (pillView || appsLong) && !hidden && !stage && (!fullApp || model.pillFull);
+}
+
 void Drawer::SyncDesk() {
     if (!desk || desk->Editing()) return;
     if (opened) longHeld = false; // the panel took over: a new call brings it back
-    bool appsLong = model.deskApps && longHeld && !(deskView && !model.LongPill()); // held over an app: back on a desktop that wears the regular pill, it lets go
-    desk->Want(deskOn && (pillView || appsLong) && !hidden && !stage && !opened && !peeking && !dragging && (!fullApp || model.pillFull), mon);
+    bool compactUp = island || islandLook || peekLook || spring.value > kStrip + 1.0f;
+    desk->Want(WantLongPill() && !opened && !peeking && !dragging && !zoomActive && !compactUp, mon);
 }
 
 void Drawer::DeskEdit(int from) {

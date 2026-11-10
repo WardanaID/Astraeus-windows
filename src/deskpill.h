@@ -28,6 +28,9 @@ public:
     bool Create();
     void Want(bool up, HMONITOR on); // the drawer's verdict: the desktop is what's under it, or not
     bool Up() const { return wantUp; } // it's there or on its way: the island steps aside
+    bool Visible() const;
+    void HideNow(); // hide immediately when Zoom Fade opens so the two windows never overlap
+    bool MorphShape(int edgeWant, float& lenOut, float& thickOut) const;
     void Edit(HMONITOR on, int from = Model::kEditFromLong); // from: which pill was right clicked, for the tab it opens on
     void Studio(HMONITOR on); // the same stage, the wallpaper filling the screen, for arranging the widgets
     bool Editing() const { return editing || leaving; }
