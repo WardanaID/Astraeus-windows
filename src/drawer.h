@@ -152,7 +152,7 @@ private:
     void MoveDrag(float y);
     void EndDrag();
     float Rubber(float raw) const; // resist drag past full height
-    bool MainShown() const { return opened || dragging || peeking || island || spring.value > 0.5f; }
+    bool MainShown() const { return opened || dragging || peeking || island || zoomActive || spring.value > 0.5f; }
     void Redraw() {
         if (MainShown()) needsFrame = true; // skip frames when fully closed
     }
@@ -177,12 +177,13 @@ private:
     static constexpr float kSideW = 400, kSideMaxH = 860, kTopRail = 58; // sidebar size, top rail height
     float sideH = kSideMaxH; // fitted to the screen in Place
     float DepthOf(D2D1_POINT_2F p) const; // window point -> distance from the docked edge
+    D2D1_POINT_2F EdgeAnchor() const; // center of the docked edge in window dips (zoom origin)
     D2D1_MATRIX_3X2_F EdgeXform() const; // the shape is built for the top edge, this turns it to the docked one
     void ApplyPlace(); // edge or screens setting changed: re-dock, rebuild hover strips
     void BuildStrips(); // invisible hover strips on the other screens
     void FreeStrips();
     static LRESULT CALLBACK StripProc(HWND, UINT, WPARAM, LPARAM);
-    ComPtr<ID2D1Geometry> BuildShape(float h, float w) const;
+    ComPtr<ID2D1Geometry> BuildShape(float h, float w, float floatTopGap = -1.0f) const;
     void DrawBody(float h, float dt, double now);
     void DrawPeek(float h);
     void DrawHint(float h); // the page's tip, just outside the panel
@@ -332,6 +333,16 @@ private:
     float islandBars[4] = {}; // mini visualizer levels, eased per frame
     anim::Spring spring;
     anim::Spring widthSpring; // smooth horizontal morphing of the Dynamic Island between pill, compact pop-up, and expanded pop-up
+    anim::Spring zoomSpring; // 0..1 open/close progress when OpenAnim == kAnimZoom
+    bool zoomActive = false; // main panel is animating open or close via Zoom Fade
+    bool zoomFromPill = false; // open emerged out of a pill or notification pop-up
+    bool zoomToPill = false; // close returns directly into the resting pill
+    bool zoomDrawPill = false; // pill UI crossfades inside the morphing capsule
+    float zoomPillW = kIslandW, zoomPillH = kIslandH;
+    float zoomAlpha = 1.0f; // panel body opacity (0..1) during Zoom Fade
+    float zoomInvScale = 1.0f; // inverse scale for input hit-testing during Zoom Fade
+    D2D1_POINT_2F zoomAnchor{}; // anchor in window dips for zoomInvScale
+    D2D1_MATRIX_3X2_F zoomBodyXform = D2D1::Matrix3x2F::Identity();
     bool opened = false, dragging = false, peeking = false;
     bool island = false; // island pill is up (or dropping)
     bool islandLook = false; // draw the narrow island shape, until it has fully retracted

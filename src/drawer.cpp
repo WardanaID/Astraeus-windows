@@ -164,6 +164,9 @@ void Drawer::ShowIsland() {
     KillTimer(hwnd, kCloseTimer);
     KillTimer(hwnd, kPeekExpandTimer);
     peekLook = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
+    zoomAlpha = zoomInvScale = 1.0f;
+    zoomBodyXform = D2D1::Matrix3x2F::Identity();
     peekHoverRow = peekCloseRow = -1;
     peekShownRows = 0;
     island = islandLook = true;
@@ -212,6 +215,12 @@ void Drawer::SampleShade() { // a page can scroll from dark to white without any
 
 float Drawer::DepthOf(D2D1_POINT_2F p) const {
     return edgeNow == 0 ? p.y : edgeNow == 1 ? p.x : winH - p.x; // right edge: measured from the window's right side
+}
+
+D2D1_POINT_2F Drawer::EdgeAnchor() const {
+    return edgeNow == 0 ? D2D1_POINT_2F{winW / 2, 0}
+         : edgeNow == 1 ? D2D1_POINT_2F{0, winW / 2}
+                        : D2D1_POINT_2F{winH, winW / 2};
 }
 
 D2D1_RECT_F Drawer::Visible() const { // the window's part of the surface, in dips: the top left corner, as big as the window
@@ -319,6 +328,10 @@ void Drawer::Open() {
     pageSet = false;
     if (model.Glassy() && spring.value < 1) SampleBehind(); // read the background before the panel covers it
     bool fromPill = islandLook || peekLook;
+    float pillW0 = peekLook ? ActivePeekSpan() : IslandSpan();
+    float pillH0 = peekLook ? (std::max)(kIslandH, spring.value) : kIslandH;
+    bool wasRestingPill = islandLook && !peekLook && !opened;
+    bool wasClosingZoom = zoomActive && !opened;
     grow = grow || fromPill; // expanding out of the island or notification pop-up: width morphs as it drops
     island = islandLook = peekLook = peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
     peekHoverRow = peekCloseRow = -1;
@@ -332,6 +345,7 @@ void Drawer::Open() {
     KillTimer(hwnd, kPeekExpandTimer);
     peeking = false; // peek upgrades to full open
     for (sys::Toast t; model.notifyWatch.Pop(t);) {} // the rest of a notification queue would only show stale once it closes
+    bool alreadyOpen = opened;
     if (!opened) {
         opened = true;
         SyncDesk(); // the long pill makes way
@@ -341,9 +355,36 @@ void Drawer::Open() {
         model.SetLive(true, page == Model::kPgSystem, page == Model::kPgNetwork); // fast polling only while visible, the process list only on the system page, latency only on the network page
     }
     else if (!tourSeen && model.tourNext && tourStep < 0) TourStart(); // the first time the panel opens this launch, while its switch is on
-    Resize(Depth() + overshoot, true); // grow first so bounce isn't clipped
-    spring.target = Depth();
-    spring.damp = model.reduceMotion ? 1.0f : 0.62f; // underdamped, drips open with a bounce; calm: it just arrives
+
+    float targetDepth = Depth();
+    Resize(targetDepth + overshoot, true); // grow first so bounce/zoom isn't clipped
+    if (model.openAnim == Model::kAnimZoom && !alreadyOpen) {
+        zoomActive = true;
+        if (!wasClosingZoom) {
+            zoomFromPill = fromPill;
+            zoomDrawPill = wasRestingPill;
+            zoomPillW = pillW0;
+            zoomPillH = pillH0;
+            float dragStart = !fromPill && spring.value > 1.0f ? anim::Clamp01(spring.value / targetDepth) : 0.0f;
+            zoomSpring.value = dragStart;
+            zoomSpring.vel = 0;
+        }
+        zoomToPill = false;
+        static constexpr float kOpenStiff[Model::kAnimSpeeds] = {420.0f, 290.0f, 185.0f};
+        zoomSpring.stiff = kOpenStiff[(std::clamp)(model.animSpeed, 0, Model::kAnimSpeeds - 1)];
+        zoomSpring.damp = model.reduceMotion ? 1.0f : 0.60f; // lively spring overshoot (~9.5%)
+        zoomSpring.target = 1.0f;
+        spring.value = spring.target = targetDepth;
+        spring.vel = 0;
+    } else if (!alreadyOpen) {
+        zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
+        zoomSpring = anim::Spring{};
+        zoomAlpha = zoomInvScale = 1.0f;
+        zoomBodyXform = D2D1::Matrix3x2F::Identity();
+        spring.target = targetDepth;
+        spring.stiff = 320.0f;
+        spring.damp = model.reduceMotion ? 1.0f : 0.62f; // underdamped, drips open with a bounce; calm: it just arrives
+    }
     if (screensNow == 1 && !strips.empty()) SetTimer(hwnd, kFollowTimer, kFollowMs, nullptr); // every screen: follow the cursor to another one
     Redraw();
 }
@@ -423,7 +464,8 @@ void Drawer::Close() {
     KillTimer(hwnd, kPeekExpandTimer);
     peeking = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
     peekHoverRow = peekCloseRow = -1;
-
+    bool wasOpened = opened;
+    bool wasOpenedOrZoom = opened || zoomActive;
     opened = false;
     island = false; // the island retracts with the same spring, its shape stays until it's gone
     model.hexFocus = model.cityFocus = model.faceSearch = false;
@@ -444,8 +486,42 @@ void Drawer::Close() {
     model.CloseSettings();
     model.CloseCal();
     model.SetLive(false, false);
-    spring.target = 0;
-    spring.damp = 0.92f; // near critical, retract without bounce
+    if (model.openAnim == Model::kAnimZoom && wasOpenedOrZoom && spring.value > 1.0f && !dragging) {
+        bool toPill = Stays() && !(desk && desk->Up()) && !followTo && !stage && !hidden;
+        bool fromOpenZoom = wasOpened && (!zoomActive || zoomSpring.value >= 0.90f);
+        bool wasClosingZoom = zoomActive && !wasOpened && zoomSpring.target <= 0.0f;
+        if (!wasClosingZoom) {
+            if (!zoomActive) {
+                zoomSpring.value = 1.0f;
+                zoomSpring.vel = 0;
+            }
+            if (!model.reduceMotion && fromOpenZoom) zoomSpring.vel = 0.68f; // tactile release pop before spring-closing
+        }
+        zoomActive = true;
+        zoomToPill = toPill;
+        if (toPill) {
+            zoomFromPill = true;
+            zoomDrawPill = true;
+            zoomPillW = IslandSpan();
+            zoomPillH = kIslandH;
+        } else {
+            zoomFromPill = false;
+            zoomDrawPill = false;
+        }
+        static constexpr float kCloseStiff[Model::kAnimSpeeds] = {390.0f, 270.0f, 175.0f};
+        zoomSpring.stiff = kCloseStiff[(std::clamp)(model.animSpeed, 0, Model::kAnimSpeeds - 1)];
+        zoomSpring.damp = model.reduceMotion ? 1.0f : 0.64f; // bouncy spring settle on close too
+        zoomSpring.target = 0.0f;
+        spring.target = Depth();
+        Resize(Depth() + overshoot, false);
+    } else {
+        zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
+        zoomAlpha = zoomInvScale = 1.0f;
+        zoomBodyXform = D2D1::Matrix3x2F::Identity();
+        spring.target = 0;
+        spring.stiff = 320.0f;
+        spring.damp = 0.92f; // near critical, retract without bounce
+    }
     Redraw();
 }
 
@@ -562,6 +638,9 @@ void Drawer::Peek(const std::wstring& title, const std::wstring& detail, int ico
     peekHoverRow = peekCloseRow = -1;
     peekStack.clear();
     peekIdx = 0;
+    zoomActive = zoomToPill = zoomFromPill = zoomDrawPill = false;
+    zoomAlpha = zoomInvScale = 1.0f;
+    zoomBodyXform = D2D1::Matrix3x2F::Identity();
     KillTimer(hwnd, kPeekExpandTimer);
     peekBmp.Reset();
     peekIcon = icon;
@@ -723,6 +802,9 @@ void Drawer::UpdatePeekLayout() {
 void Drawer::PeekToast(sys::Toast toast) {
     bool isInternal = toast.launch == L"astraeus:tools" || toast.aumid == L"astraeus.notice";
     if (overFull || hidden || (model.quiet && !isInternal) || opened || !EnsureDev()) return;
+    zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
+    zoomAlpha = zoomInvScale = 1.0f;
+    zoomBodyXform = D2D1::Matrix3x2F::Identity();
     if (model.Glassy() && spring.value < 1) SampleBehind();
     ULONGLONG nowTick = GetTickCount64();
     if (!toast.silent && !model.quiet && nowTick - lastToastSoundAt > 450) {
@@ -1142,7 +1224,7 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN: {
         if (!opened && model.keyOnly) return 0; // only the shortcut opens it: a click on the strip, the pill or a notification does nothing
-        if ((island || peeking) && !opened) { // tap a pill (or reverse a zoom close): the full panel grows out of it, or a notification opens its app
+        if ((island || peeking || zoomActive) && !opened) { // tap a pill (or reverse a zoom close): the full panel grows out of it, or a notification opens its app
             D2D1_POINT_2F p = ToDip(lp);
             if (peeking) {
                 if (peekToastNow && !Side()) {
@@ -1699,9 +1781,42 @@ void Drawer::Frame() {
     if (lastFrame == 0) dt = 1 / 60.0f; // first frame, assume 60hz
     lastFrame = now;
 
-    bool hMoving = !dragging && spring.Step(dt); // drag drives value directly
+    bool hMoving = !dragging && !zoomActive && spring.Step(dt); // drag drives value directly
     bool wMoving = widthSpring.Step(dt);
-    bool moving = hMoving || wMoving;
+    bool zMoving = !dragging && zoomActive && zoomSpring.Step(dt, 0.0012f, 0.02f); // normalized 0..1 spring needs sub-thousandth settle thresholds
+    if (zoomActive && !zMoving && !dragging) {
+        if (!opened && zoomSpring.target <= 0.0f) {
+            zoomActive = false;
+            zoomBodyXform = D2D1::Matrix3x2F::Identity();
+            zoomInvScale = 1.0f;
+            zoomAlpha = 1.0f;
+            if (zoomToPill && !followTo && !stage && !hidden && Stays() && !(desk && desk->Up())) {
+                zoomToPill = zoomFromPill = zoomDrawPill = false;
+                island = islandLook = true;
+                peekLook = peekToastNow = false;
+                spring.value = spring.target = kIslandH;
+                spring.vel = 0;
+                widthSpring.value = widthSpring.target = IslandSpan();
+                widthSpring.vel = 0;
+                Resize(kIslandH, false);
+                SyncDesk();
+            } else {
+                zoomToPill = zoomFromPill = zoomDrawPill = false;
+                spring.value = spring.target = 0;
+                spring.vel = 0;
+            }
+        } else if (opened && zoomSpring.target >= 1.0f) {
+            zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
+            zoomSpring.value = 1.0f;
+            zoomSpring.vel = 0;
+            zoomBodyXform = D2D1::Matrix3x2F::Identity();
+            zoomInvScale = 1.0f;
+            zoomAlpha = 1.0f;
+            spring.value = spring.target = Depth();
+            spring.vel = 0;
+        }
+    }
+    bool moving = hMoving || wMoving || zMoving;
     if (!moving && !dragging) { // spring settled
         grow = false; // expansion finished, or retracted
         if (spring.target <= 0 && winH > kStrip) {
@@ -1802,28 +1917,83 @@ void Drawer::Frame() {
     bool uiBusy = false, ambient = false;
     railHot = false; // the body sets it again while the mouse stays on the rail
     ComPtr<ID2D1Geometry> outline; // this frame's shape, the glass blur is cut to it
-    if (h > 0.5f) {
+    float glassFade = 1.0f;
+    if (h > 0.5f || zoomActive) {
         float shapeWide = Span();
         float curPeekW = ActivePeekSpan();
-        if (islandLook) {
-            shapeWide = IslandSpan();
-            if (peekReach > kIslandH + 1 && h > kIslandH + 0.5f) { // smoothly contracting from a Dynamic Island notification back to the resting pill
-                float t = anim::Clamp01((h - kIslandH) / (peekReach - kIslandH));
-                shapeWide = IslandSpan() + (curPeekW - IslandSpan()) * t;
+        bool morphPill = zoomActive && (zoomFromPill || zoomToPill);
+        bool pushedOuterFade = false;
+        bool pushedMorphClip = false;
+        float pillFadeA = 0.0f;
+        float shapeTopGap = -1.0f;
+        zoomBodyXform = D2D1::Matrix3x2F::Identity();
+        zoomInvScale = 1.0f;
+        zoomAlpha = 1.0f;
+
+        if (zoomActive) {
+            float p = zoomSpring.value;
+            float e = anim::Clamp01(p);
+            float over = p - e; // > 0 during spring overshoot on open
+            float under = (std::min)(0.0f, p); // < 0 during spring settle bounce on close into pill
+            float minZ = model.reduceMotion ? 0.96f : 0.82f;
+            float zScale = (std::max)(0.5f, minZ + (1.0f - minZ) * e + (over > 0.0f ? over * 0.08f : under * 0.20f));
+            D2D1_POINT_2F anc = EdgeAnchor();
+            if (morphPill) {
+                float hGrow = p >= 0.0f
+                    ? zoomPillH + (Depth() - zoomPillH) * p
+                    : (std::max)(zoomPillH * 0.82f, zoomPillH + under * 88.0f);
+                h = (std::clamp)(hGrow, 8.0f, Depth() + overshoot - 4.0f);
+                shapeWide = p >= 1.0f
+                    ? Span()
+                    : p >= 0.0f
+                        ? zoomPillW + (Span() - zoomPillW) * p
+                        : (std::max)(zoomPillW * 0.88f, zoomPillW + under * 240.0f);
+                if (Floating()) shapeTopGap = (std::min)(kFloatGap + 4.0f, (std::max)(0.0f, p) * kFloatGap);
+                zoomAlpha = anim::Clamp01((p - 0.10f) / 0.72f);
+                if (zoomDrawPill) pillFadeA = anim::Clamp01(1.0f - e / 0.36f);
+                zoomBodyXform = D2D1::Matrix3x2F::Scale(zScale, zScale, anc);
+                zoomInvScale = 1.0f / zScale;
+                zoomAnchor = anc;
+                shapeXform = EdgeXform();
+                glassFade = 1.0f;
+            } else {
+                float zx = (std::min)(1.0f, zScale);
+                h = (std::clamp)(Depth() * (over > 0.0f ? 1.0f + over * 0.18f : 1.0f), 8.0f, Depth() + overshoot - 4.0f);
+                shapeWide = Span();
+                glassFade = e;
+                zoomAlpha = 1.0f;
+                zoomBodyXform = D2D1::Matrix3x2F::Scale(zx, zx, anc);
+                zoomInvScale = 1.0f / zx;
+                zoomAnchor = anc;
+                shapeXform = D2D1::Matrix3x2F::Scale(zx, zx, {Span() / 2, 0}) * EdgeXform();
+                if (e < 0.999f) {
+                    pushedOuterFade = true;
+                    ctx->SetTransform(D2D1::Matrix3x2F::Identity());
+                    ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                          D2D1::IdentityMatrix(), e), nullptr);
+                }
             }
-        } else if (peekLook) {
-            float t = peekReach > kIslandH + 1 ? anim::Clamp01((h - kIslandH) / (peekReach - kIslandH)) : 1.0f;
-            shapeWide = IslandSpan() + (curPeekW - IslandSpan()) * t; // Dynamic Island morphs smoothly in both width and height
+        } else {
+            if (islandLook) {
+                shapeWide = IslandSpan();
+                if (peekReach > kIslandH + 1 && h > kIslandH + 0.5f) { // smoothly contracting from a Dynamic Island notification back to the resting pill
+                    float t = anim::Clamp01((h - kIslandH) / (peekReach - kIslandH));
+                    shapeWide = IslandSpan() + (curPeekW - IslandSpan()) * t;
+                }
+            } else if (peekLook) {
+                float t = peekReach > kIslandH + 1 ? anim::Clamp01((h - kIslandH) / (peekReach - kIslandH)) : 1.0f;
+                shapeWide = IslandSpan() + (curPeekW - IslandSpan()) * t; // Dynamic Island morphs smoothly in both width and height
+            }
+            auto wideAt = [&](float at) {
+                float from = peekToastNow ? curPeekW : IslandSpan();
+                float h0 = peekToastNow ? peekReach : kIslandH;
+                return from + (Span() - from) * anim::Clamp01((at - h0) / ((std::max)(h0 + 20.0f, Depth() * 0.3f) - h0));
+            };
+            if (!islandLook && !peekLook && grow) shapeWide = wideAt(h); // pill widens into the panel
+            shapeXform = EdgeXform();
         }
-        auto wideAt = [&](float at) {
-            float from = peekToastNow ? curPeekW : IslandSpan();
-            float h0 = peekToastNow ? peekReach : kIslandH;
-            return from + (Span() - from) * anim::Clamp01((at - h0) / ((std::max)(h0 + 20.0f, Depth() * 0.3f) - h0));
-        };
-        if (!islandLook && !peekLook && grow) shapeWide = wideAt(h); // pill widens into the panel
-        shapeXform = EdgeXform();
         ctx->SetTransform(shapeXform); // turned to the docked edge, centered in the window
-        ComPtr<ID2D1Geometry> shape = Shape(h, shapeWide);
+        ComPtr<ID2D1Geometry> shape = shapeTopGap >= 0.0f ? BuildShape(h, shapeWide, shapeTopGap) : Shape(h, shapeWide);
         if (pillCached) { // a resting pill: its still parts come from the layer, only the bars are drawn fresh
             ctx->SetTransform(D2D1::Matrix3x2F::Identity());
             ctx->DrawImage(pillLayer.Get());
@@ -1834,7 +2004,7 @@ void Drawer::Frame() {
             skyPass = 0;
         }
         outline = shape;
-        if (glass && (std::fabs(spring.vel) > 1 || std::fabs(widthSpring.vel) > 1) && !dragging) { // composition applies the blur's outline a few frames late: cut it where the glass will be, both ways
+        if (glass && !zoomActive && (std::fabs(spring.vel) > 1 || std::fabs(widthSpring.vel) > 1) && !dragging) { // composition applies the blur's outline a few frames late: cut it where the glass will be, both ways
             bool closing = spring.target < h - overshoot; // really going away, not the bounce settling back after a drop
             float frames = closing ? 3.0f : 1.5f; // dropping and its bounce: a shorter lead, any more and the blur runs ahead of the glass
             anim::Spring ahead = spring; // where the spring will really be, not a straight line: that overshot the bounce's peak
@@ -1853,7 +2023,7 @@ void Drawer::Frame() {
             }
             outline = lead > 0.5f ? BuildShape(lead, leadWide) : nullptr;
         }
-        if (ClearPill()) outline = nullptr; // nothing to frost
+        if (ClearPill() || (zoomActive && glassFade < 0.02f)) outline = nullptr; // nothing to frost
         ctx->SetTransform(Side() ? D2D1::Matrix3x2F::Identity() : shapeXform);
         if (peeking || peekLook) {
             DrawPeek(h);
@@ -1865,11 +2035,40 @@ void Drawer::Frame() {
             ambient = DrawPillNow(h, dt, now);
             pillPass = 0;
         }
+        else if (zoomActive) {
+            if (morphPill && pillFadeA > 0.01f && !Side()) {
+                float ps = 1.0f + (model.reduceMotion ? 0.04f : 0.14f) * (1.0f - pillFadeA);
+                ctx->SetTransform(D2D1::Matrix3x2F::Scale(ps, ps, {W / 2, kIslandH / 2}) * shapeXform);
+                ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                      D2D1::IdentityMatrix(), pillFadeA), nullptr);
+                ambient = DrawPillNow(kIslandH, dt, now) || ambient;
+                ctx->PopLayer();
+            } else if (morphPill && pillFadeA > 0.01f && Side()) {
+                float ps = 1.0f + (model.reduceMotion ? 0.04f : 0.14f) * (1.0f - pillFadeA);
+                ctx->SetTransform(D2D1::Matrix3x2F::Scale(ps, ps, EdgeAnchor()));
+                ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                      D2D1::IdentityMatrix(), pillFadeA), nullptr);
+                ambient = DrawPillNow(kIslandH, dt, now) || ambient;
+                ctx->PopLayer();
+            }
+            if (zoomAlpha > 0.01f) {
+                if (morphPill && shape) {
+                    ctx->SetTransform(shapeXform);
+                    ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), shape.Get()), nullptr);
+                    pushedMorphClip = true;
+                }
+                DrawBody(Depth(), dt, now);
+                uiBusy = ui.Busy();
+                ambient = ui.Ambient() || ambient;
+                if (pushedMorphClip) ctx->PopLayer();
+            }
+        }
         else if (h > 24) { // too short for content, just shape
             DrawBody(h, dt, now);
             uiBusy = ui.Busy();
             ambient = ui.Ambient();
         }
+        if (pushedOuterFade) ctx->PopLayer();
     }
     ctx->SetTransform(D2D1::Matrix3x2F::Identity());
     ctx->PopAxisAlignedClip();
@@ -1884,7 +2083,7 @@ void Drawer::Frame() {
         return;
     }
     if (glass) {
-        GlassBlur(model.GlassBlur() / 100.0f);
+        GlassBlur((model.GlassBlur() / 100.0f) * glassFade);
         GlassMask(outline.Get());
     }
     bool fast = moving || dragging || uiBusy || themes || pageT < 1; // anything actively animating
@@ -1916,7 +2115,7 @@ void Drawer::Frame() {
         trimKey = pillKey;
         SetTimer(hwnd, kTrimTimer, kTrimMs, nullptr);
     }
-    if (PlaceStale() && !opened && !dragging && !peeking && (spring.value <= 0.5f || island)) ApplyPlace(); // a pill that always stays would otherwise keep the old edge forever
+    if (PlaceStale() && !opened && !dragging && !peeking && !zoomActive && (spring.value <= 0.5f || island)) ApplyPlace(); // a pill that always stays would otherwise keep the old edge forever
     if (model.deskEditAsk) model.deskEditAsk = false, PostMessageW(hwnd, kDeskEditMsg, 0, 0); // never inside a frame: it takes the panel away
     if (model.tourAsk) model.tourAsk = false, TourStart(); // asked for in settings: they close for it
     if (model.studioAsk) PostMessageW(hwnd, kDeskEditMsg, model.studioAsk, 0), model.studioAsk = Model::kStudioNone;

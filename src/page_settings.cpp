@@ -30,7 +30,7 @@ int wheelPick = 0; // custom wheel: the handle being edited, 0 accent, 1 backgro
 constexpr int kHandles = 2;
 float settingsScroll = 0; // wanted scroll of the cards, eased by Scroll
 constexpr float kMinRow = 196; // cards never squeeze below this: the page scrolls instead
-constexpr float kLyricsRow = 112; // the motion card, a shorter row
+constexpr float kMotionRow = 144, kMotionTallRow = 212; // the motion & animation card
 constexpr float kNoteLines = 44; // three short lines of a note beside a small picture
 constexpr float kDndW = 44; // the do not disturb pill in the notifications card
 constexpr float kDeskRowH = 30; // the island card's desktop switch
@@ -341,28 +341,75 @@ void Chip(PageCtx& p, const D2D1_RECT_F& r, int which, const wchar_t* name, bool
     }
 }
 
-void Motion(PageCtx& p, const D2D1_RECT_F& r, bool live) { // a tiny spring: bouncy when full, a smooth arrival when calm
+float MotionH(float w) { return w >= 460 ? kMotionRow : kMotionTallRow; }
+
+void Motion(PageCtx& p, const D2D1_RECT_F& r, bool live) { // motion feel toggle + open/close animation style & speed
     Ui& ui = p.ui;
     Canvas& c = ui.C();
     const Theme& t = p.shell;
     Model& m = p.m;
-    D2D1_RECT_F in = Box(c, t, r, L"Motion");
-    Ui::Hit h = live ? ui.Button(Ui::Id("set.motion"), in) : Ui::Hit{};
+    D2D1_RECT_F in = Box(c, t, r, L"Motion & Animation");
+    bool wide = Width(in) >= 436;
+    float leftW = wide ? Width(in) * 0.44f : Width(in);
+    D2D1_RECT_F feelBox = Rect(in.left, in.top, leftW, wide ? Height(in) : 64.0f);
+    D2D1_RECT_F ctrlBox = wide
+        ? Rect(in.left + leftW + 14, in.top, Width(in) - leftW - 14, Height(in))
+        : Rect(in.left, feelBox.bottom + 8, Width(in), in.bottom - feelBox.bottom - 8);
+
+    // Controls column (evaluated cleanly before full feel hit so feelBox doesn't steal segmented clicks)
+    static const wchar_t* const kAnimNames[Model::kOpenAnims] = {L"Zoom fade", L"Spring drop"};
+    static const wchar_t* const kSpeedNames[Model::kAnimSpeeds] = {L"Fast", L"Balanced", L"Smooth"};
+    float lblW = 54.0f, segW = (std::max)(110.0f, Width(ctrlBox) - lblW - 4.0f);
+    D2D1_RECT_F row1 = Rect(ctrlBox.left, ctrlBox.top + 8.0f, Width(ctrlBox), 28.0f);
+    c.Text(L"Panel", Rect(row1.left, row1.top, lblW, Height(row1)), Weight::Regular, 11.5f, t.text);
+    int animPick = Segmented(ui, t, "set.openanim", Rect(row1.right - segW, row1.top, segW, Height(row1)), kAnimNames, Model::kOpenAnims, m.openAnim, live);
+    if (animPick >= 0 && animPick != m.openAnim) m.SetPref(m.openAnim, L"OpenAnim", animPick);
+
+    D2D1_RECT_F row3 = Rect(ctrlBox.left, row1.bottom + 10.0f, Width(ctrlBox), 28.0f);
+    bool zoomOn = m.openAnim == Model::kAnimZoom;
+    bool speedActive = zoomOn;
+    float spdDim = ui.Smooth(Ui::Id("set.animspd.dim"), speedActive ? 1.0f : 0.42f, 14);
+    bool layeredSpd = spdDim < 0.999f;
+    if (layeredSpd) c.Target()->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), spdDim), nullptr);
+    c.Text(L"Speed", Rect(row3.left, row3.top, lblW, Height(row3)), Weight::Regular, 11.5f, t.text);
+    int spdPick = Segmented(ui, t, "set.animspeed", Rect(row3.right - segW, row3.top, segW, Height(row3)), kSpeedNames, Model::kAnimSpeeds, m.animSpeed, live && speedActive);
+    if (spdPick >= 0 && spdPick != m.animSpeed && speedActive) m.SetPref(m.animSpeed, L"AnimSpeed", spdPick);
+    if (layeredSpd) c.Target()->PopLayer();
+
+    // Left interactive preview & Reduced Motion toggle
+    Ui::Hit h = live ? ui.Button(Ui::Id("set.motion"), feelBox) : Ui::Hit{};
+    if (live) ui.Name(L"Reduced motion");
     float calm = ui.Smooth(Ui::Id("set.motion", 1), m.reduceMotion ? 1.0f : 0, 12);
-    float mh = (std::min)(Height(in) - 6, 64.0f), mw = mh / 0.6f;
-    D2D1_RECT_F scr = Rect(in.left + 4, in.top + 1, mw, mh);
-    D2D1_POINT_2F last{};
-    for (int i = 0; i <= 24; ++i) { // where the panel's edge goes over time
-        float x = i / 24.0f, ease = 1 - std::exp(-5 * x), bounce = 0.38f * std::sin(11 * x) * std::exp(-3.5f * x) * (1 - calm);
-        D2D1_POINT_2F pt = {scr.left + 6 + x * (mw - 12), scr.bottom - 8 - (ease + bounce) * (mh - 22)};
-        if (i) c.Line(last, pt, t.accentHi, 2);
-        last = pt;
+    float mh = (std::min)(Height(feelBox) - 4, 68.0f), mw = mh / 0.62f;
+    D2D1_RECT_F scr = Rect(feelBox.left + 2, (feelBox.top + feelBox.bottom - mh) / 2, mw, mh);
+    if (m.openAnim == Model::kAnimZoom) {
+        // Miniature Pill -> Zoom+Fade nested expansion diagram
+        float pillW = mw * 0.42f, pillH = 7.0f;
+        D2D1_RECT_F pillR = Rect((scr.left + scr.right - pillW) / 2, scr.top + 3.0f, pillW, pillH);
+        D2D1_RECT_F midR = Rect(scr.left + mw * 0.16f, scr.top + 3.0f, mw * 0.68f, mh * 0.56f);
+        D2D1_RECT_F fullR = Rect(scr.left + 3.0f, scr.top + 3.0f, mw - 6.0f, mh - 7.0f);
+        c.Fill(fullR, 8.0f, t.accent.Alpha(0.10f * (1.0f - 0.35f * calm)));
+        c.Stroke(fullR, 8.0f, t.accentHi.Alpha(0.85f), 1.4f);
+        c.Fill(midR, 6.0f, t.accent.Alpha(0.14f));
+        c.Stroke(midR, 6.0f, t.accent.Alpha(0.55f), 1.0f);
+        c.Fill(pillR, pillH / 2, t.accentHi.Alpha(0.9f));
+        D2D1_POINT_2F pMid = {(scr.left + scr.right) / 2, scr.top + pillH + 2};
+        c.Line(pMid, {fullR.left + 9, fullR.bottom - 6}, t.accentHi.Alpha(0.55f), 1.2f);
+        c.Line(pMid, {fullR.right - 9, fullR.bottom - 6}, t.accentHi.Alpha(0.55f), 1.2f);
+    } else {
+        D2D1_POINT_2F last{};
+        for (int i = 0; i <= 24; ++i) { // where the panel's edge goes over time
+            float x = i / 24.0f, ease = 1 - std::exp(-5 * x), bounce = 0.38f * std::sin(11 * x) * std::exp(-3.5f * x) * (1 - calm);
+            D2D1_POINT_2F pt = {scr.left + 6 + x * (mw - 12), scr.bottom - 8 - (ease + bounce) * (mh - 22)};
+            if (i) c.Line(last, pt, t.accentHi, 2);
+            last = pt;
+        }
     }
-    if (h.hover) c.Stroke(Inset(in, -4, -4), 12, t.accent.Alpha(0.35f), 1.5f);
-    float x0 = scr.right + 16;
-    c.Text(m.reduceMotion ? L"Reduced" : L"Full", Rect(x0, in.top + 6, in.right - x0, 20), Weight::Medium, 14, m.reduceMotion ? t.accentHi : t.textDim);
-    c.Text(m.reduceMotion ? L"No bounce or drifting,\npages fade in place\nof sliding" : L"Springy drops,\nsliding pages,\ndrifting orbits",
-           Rect(x0, in.top + 26, in.right - x0, kNoteLines), Weight::Light, 10.5f, t.textDim);
+    if (h.hover) c.Stroke(Inset(feelBox, -3, -3), 10, t.accent.Alpha(0.35f), 1.5f);
+    float x0 = scr.right + 12, textTop = (feelBox.top + feelBox.bottom - 52) / 2;
+    c.Text(m.reduceMotion ? L"Reduced" : L"Full", Rect(x0, textTop, feelBox.right - x0, 18), Weight::Medium, 13.5f, m.reduceMotion ? t.accentHi : t.textDim);
+    c.Text(m.reduceMotion ? L"Minimal scale & fade,\nno overshoot" : (zoomOn ? L"Zoom & fade from pill,\nspringy settle" : L"Bouncy drops,\nresponsive to your mouse"),
+           Rect(x0, textTop + 20, feelBox.right - x0, kNoteLines), Weight::Light, 10.5f, t.textDim);
     if (h.clicked) m.SetPref(m.reduceMotion, L"ReduceMotion", m.reduceMotion ? 0 : 1);
 }
 
@@ -768,10 +815,11 @@ void DrawSettings(PageCtx& p, float k) {
     }
 
     int rows = frame.tall ? 3 : 2;
-    float ch = (std::max)(kMinRow, (Height(grid) - rows * kGap - kLyricsRow) / rows); // short page: cards keep their size and the page scrolls
+    float motionH = MotionH(Width(grid));
+    float ch = (std::max)(kMinRow, (Height(grid) - rows * kGap - motionH) / rows); // short page: cards keep their size and the page scrolls
     static float prefsH = 0; // the newer cards' height, as they measured last frame
     float glassOpen = ui.Smooth(Ui::Id("set.glasscard"), p.m.look == 2 || p.m.look == Model::kLookClear ? 1.0f : 0, 14), glassH = (kGlassCardH + kGap) * glassOpen; // opens under the first row, whichever way the page is laid out
-    float content = rows * (ch + kGap) + kLyricsRow + kGap + prefsH + glassH + TabsH(p.m, Width(grid)) + kGap;
+    float content = rows * (ch + kGap) + motionH + kGap + prefsH + glassH + TabsH(p.m, Width(grid)) + kGap;
     static double scrolledAt = -10; // a scroll in flight keeps the wheel even as a slider passes under the mouse
     bool pageWheel = !OverSlider(ui) || ui.Now() - scrolledAt < kWheelHold;
     if (pageWheel && ui.In().wheel != 0 && Inside(grid, ui.In().mouse)) scrolledAt = ui.Now();
@@ -796,8 +844,8 @@ void DrawSettings(PageCtx& p, float k) {
         Screens(p, Rect(grid.left + 2 * (cw + kGap), grid.top, cw, ch), live);
         Notices(p, Rect(grid.left, under + glassH, cw, ch), live);
         Island(p, Rect(grid.left + cw + kGap, under + glassH, 2 * cw + kGap, ch), live);
-        Motion(p, Rect(grid.left, grid.top + 2 * (ch + kGap) + glassH, Width(grid), kLyricsRow), live);
-        prefsH = DrawPrefs(p, {grid.left, grid.top + 2 * (ch + kGap) + glassH + kLyricsRow + kGap, grid.right, grid.bottom}, live, false);
+        Motion(p, Rect(grid.left, grid.top + 2 * (ch + kGap) + glassH, Width(grid), motionH), live);
+        prefsH = DrawPrefs(p, {grid.left, grid.top + 2 * (ch + kGap) + glassH + motionH + kGap, grid.right, grid.bottom}, live, false);
     } else { // sidebar: two by two, the island across the bottom
         float cw = (Width(grid) - kGap) / 2;
         Material(p, Rect(grid.left, grid.top, cw, ch), live);
@@ -805,8 +853,8 @@ void DrawSettings(PageCtx& p, float k) {
         Screens(p, Rect(grid.left, under + glassH, cw, ch), live);
         Notices(p, Rect(grid.left + cw + kGap, under + glassH, cw, ch), live);
         Island(p, Rect(grid.left, grid.top + 2 * (ch + kGap) + glassH, Width(grid), ch), live);
-        Motion(p, Rect(grid.left, grid.top + 3 * (ch + kGap) + glassH, Width(grid), kLyricsRow), live);
-        prefsH = DrawPrefs(p, {grid.left, grid.top + 3 * (ch + kGap) + glassH + kLyricsRow + kGap, grid.right, grid.bottom}, live, true);
+        Motion(p, Rect(grid.left, grid.top + 3 * (ch + kGap) + glassH, Width(grid), motionH), live);
+        prefsH = DrawPrefs(p, {grid.left, grid.top + 3 * (ch + kGap) + glassH + motionH + kGap, grid.right, grid.bottom}, live, true);
     }
     c.PopClip();
     Fades(c, t, view, scroll, content);

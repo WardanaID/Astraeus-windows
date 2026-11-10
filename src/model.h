@@ -327,6 +327,10 @@ public:
     bool OnClipboard(); // true when a calendar link was taken
     static constexpr UINT_PTR kCalWaitTimer = 7; // the drawer's timer that ends the wait
     int reduceMotion = 0; // calmer animation: no bounce, no drifting, no sliding
+    enum OpenAnim { kAnimZoom, kAnimDrop, kOpenAnims }; // main panel open/close style: zoom+fade out of pill vs classic spring drop
+    enum AnimSpeed { kSpeedFast, kSpeedBalanced, kSpeedSmooth, kAnimSpeeds };
+    int openAnim = kAnimZoom; // persisted: default is immersive zoom-in + fade
+    int animSpeed = kSpeedBalanced; // persisted: zoom/fade speed preset
     sys::NotifyWatch notifyWatch; // only runs while PillsWanted
     bool timerOn = false;
     sys::Shelf shelf; // what was dropped on the island, and everything copied while that's switched on
