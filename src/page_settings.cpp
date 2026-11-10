@@ -358,16 +358,22 @@ void Motion(PageCtx& p, const D2D1_RECT_F& r, bool live) { // motion feel toggle
 
     // Controls column (evaluated cleanly before full feel hit so feelBox doesn't steal segmented clicks)
     static const wchar_t* const kAnimNames[Model::kOpenAnims] = {L"Zoom fade", L"Spring drop"};
+    static const wchar_t* const kPageNames[Model::kPageAnims] = {L"Swipe", L"Crossfade"};
     static const wchar_t* const kSpeedNames[Model::kAnimSpeeds] = {L"Fast", L"Balanced", L"Smooth"};
     float lblW = 54.0f, segW = (std::max)(110.0f, Width(ctrlBox) - lblW - 4.0f);
-    D2D1_RECT_F row1 = Rect(ctrlBox.left, ctrlBox.top + 8.0f, Width(ctrlBox), 28.0f);
+    D2D1_RECT_F row1 = Rect(ctrlBox.left, ctrlBox.top, Width(ctrlBox), 26.0f);
     c.Text(L"Panel", Rect(row1.left, row1.top, lblW, Height(row1)), Weight::Regular, 11.5f, t.text);
     int animPick = Segmented(ui, t, "set.openanim", Rect(row1.right - segW, row1.top, segW, Height(row1)), kAnimNames, Model::kOpenAnims, m.openAnim, live);
     if (animPick >= 0 && animPick != m.openAnim) m.SetPref(m.openAnim, L"OpenAnim", animPick);
 
-    D2D1_RECT_F row3 = Rect(ctrlBox.left, row1.bottom + 10.0f, Width(ctrlBox), 28.0f);
+    D2D1_RECT_F row2 = Rect(ctrlBox.left, row1.bottom + 6.0f, Width(ctrlBox), 26.0f);
+    c.Text(L"Pages", Rect(row2.left, row2.top, lblW, Height(row2)), Weight::Regular, 11.5f, t.text);
+    int pagePick = Segmented(ui, t, "set.pageanim", Rect(row2.right - segW, row2.top, segW, Height(row2)), kPageNames, Model::kPageAnims, m.pageAnim, live);
+    if (pagePick >= 0 && pagePick != m.pageAnim) m.SetPref(m.pageAnim, L"PageAnim", pagePick);
+
+    D2D1_RECT_F row3 = Rect(ctrlBox.left, row2.bottom + 6.0f, Width(ctrlBox), 26.0f);
     bool zoomOn = m.openAnim == Model::kAnimZoom;
-    bool speedActive = zoomOn;
+    bool speedActive = zoomOn || m.pageAnim == Model::kPageSwipe;
     float spdDim = ui.Smooth(Ui::Id("set.animspd.dim"), speedActive ? 1.0f : 0.42f, 14);
     bool layeredSpd = spdDim < 0.999f;
     if (layeredSpd) c.Target()->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), spdDim), nullptr);
@@ -408,7 +414,7 @@ void Motion(PageCtx& p, const D2D1_RECT_F& r, bool live) { // motion feel toggle
     if (h.hover) c.Stroke(Inset(feelBox, -3, -3), 10, t.accent.Alpha(0.35f), 1.5f);
     float x0 = scr.right + 12, textTop = (feelBox.top + feelBox.bottom - 52) / 2;
     c.Text(m.reduceMotion ? L"Reduced" : L"Full", Rect(x0, textTop, feelBox.right - x0, 18), Weight::Medium, 13.5f, m.reduceMotion ? t.accentHi : t.textDim);
-    c.Text(m.reduceMotion ? L"Minimal scale & fade,\nno overshoot" : (zoomOn ? L"Zoom & fade from pill,\nspringy settle" : L"Bouncy drops,\nresponsive to your mouse"),
+    c.Text(m.reduceMotion ? L"Minimal scale & fade,\ncrossfade pages" : (m.pageAnim == Model::kPageSwipe ? (zoomOn ? L"Zoom & fade from pill,\nswipe up/down pages" : L"Springy drops,\nswipe up/down pages") : (zoomOn ? L"Zoom & fade from pill,\ncrossfade pages" : L"Springy drops,\ncrossfade pages")),
            Rect(x0, textTop + 20, feelBox.right - x0, kNoteLines), Weight::Light, 10.5f, t.textDim);
     if (h.clicked) m.SetPref(m.reduceMotion, L"ReduceMotion", m.reduceMotion ? 0 : 1);
 }
