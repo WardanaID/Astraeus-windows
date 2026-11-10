@@ -399,7 +399,8 @@ void Drawer::Close() {
     peeking = false;
     opened = false;
     island = false; // the island retracts with the same spring, its shape stays until it's gone
-    model.hexFocus = model.cityFocus = model.faceSearch = false;
+    model.hexFocus = model.cityFocus = model.calFocus = model.faceSearch = false;
+    model.calErr = false;
     ++model.pageVisit;
     model.nameFor = -1;
     model.field = Model::kFieldNone;
@@ -1126,6 +1127,22 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             Redraw();
             return 0;
         }
+        if (model.calFocus) {
+            wchar_t ch = (wchar_t)wp;
+            if (ch == 22) { // ctrl+v, first line trimmed
+                for (wchar_t c : sys::ClipText()) {
+                    if (c == L'\r' || c == L'\n') break;
+                    if (c >= 32 && model.calEdit.size() < 2048) model.calEdit += c;
+                }
+            } else if (ch == 8) {
+                if (!model.calEdit.empty()) model.calEdit.pop_back();
+            } else if (ch >= 32 && ch != 127 && model.calEdit.size() < 2048) {
+                model.calEdit += ch;
+            }
+            model.calErr = false;
+            Redraw();
+            return 0;
+        }
         break;
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE && keys && opened && !model.Typing() && !Entry::Get().focus) { // clicked away from a panel opened by the keyboard: it goes too
@@ -1204,6 +1221,12 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (model.hexFocus) {
             if (wp == VK_RETURN) model.CommitHex();
             else if (wp == VK_ESCAPE) model.hexFocus = false;
+            Redraw();
+            return 0;
+        }
+        if (model.calFocus) {
+            if (wp == VK_RETURN) model.CommitCalUrl();
+            else if (wp == VK_ESCAPE) model.calFocus = false, model.calErr = false;
             Redraw();
             return 0;
         }

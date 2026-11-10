@@ -299,20 +299,25 @@ void Agenda(PageCtx& p, const D2D1_RECT_F& list, int y, int mo, int d) { // the 
     }
 }
 
-void Links(PageCtx& p, const D2D1_RECT_F& list) { // what's connected: remove one, or connect another
+void Links(PageCtx& p, const D2D1_RECT_F& list) { // what's connected: remove one, or connect another via iCal URL
     Ui& ui = p.ui;
     Canvas& c = ui.C();
     const Theme& t = p.shell;
     Model& m = p.m;
-    if (Arrow(ui, t, Ui::Id("cal.ln.back"), {list.left + 14, list.top + 15}, false)) m.calLinks = false;
+    if (Arrow(ui, t, Ui::Id("cal.ln.back"), {list.left + 14, list.top + 15}, false)) {
+        m.calLinks = false;
+        m.calFocus = false;
+        m.calErr = false;
+    }
     c.Text(L"Calendars", Rect(list.left + 36, list.top + 2, 200, 26), Weight::Semi, 17, t.text);
+    float connTop = list.bottom - 90.0f;
     auto links = m.cals.Links();
     float ry = list.top + kHeadH + 4;
     if (links.empty()) {
-        c.Text(L"None connected yet", Rect(list.left + 4, ry, Width(list) - 8, 22), Weight::Light, 13, t.textDim);
-        ry += 30;
+        c.Text(L"None connected yet — paste an iCal (.ics) URL below", Rect(list.left + 4, ry, Width(list) - 8, 22), Weight::Light, 12.5f, t.textDim);
+        ry += 28;
     }
-    for (size_t i = 0; i < links.size() && ry + kRowH < list.bottom - 40; ++i, ry += kRowH) {
+    for (size_t i = 0; i < links.size() && ry + kRowH <= connTop - 6.0f; ++i, ry += kRowH) {
         D2D1_RECT_F row = Rect(list.left, ry, Width(list), kRowH - 6);
         c.Fill(row, 12, t.text.Alpha(0.04f));
         c.Text(links[i].name, Rect(row.left + 14, row.top + 3, Width(row) - 60, 18), Weight::Medium, 13, t.text);
@@ -320,14 +325,77 @@ void Links(PageCtx& p, const D2D1_RECT_F& list) { // what's connected: remove on
         if (w::IconBtn(ui, t, Ui::Id("cal.ln.rm", (int)i), {row.right - 20, (row.top + row.bottom) / 2}, 28, glyph::Delete, 17))
             m.cals.Remove(i, m.notify, WM_APP_CAL); // gone from this app and halobar alike
     }
-    float by = list.bottom - 30, bw = (Width(list) - 10) / 2;
-    if (m.calWaiting) {
-        c.Text(L"Copy a calendar link: it connects on its own", Rect(list.left + 4, by, Width(list) - 90, 24), Weight::Medium, 12, t.text);
-        if (TextBtn(ui, t, "cal.ln.stop", Rect(list.right - 80, by, 80, 24), L"Cancel", false)) m.StopCalWait();
-        return;
+
+    D2D1_RECT_F connectZone = Rect(list.left, connTop, Width(list), 90.0f);
+    const wchar_t* status = m.calErr ? L"Invalid link — paste a valid .ics or iCal URL"
+                          : m.calWaiting ? L"Paste iCal URL below (or copy from Google Calendar)"
+                                         : L"Add calendar via iCal (.ics) URL";
+    Color stCol = m.calErr ? kDanger : m.calWaiting ? t.accentHi : t.textDim;
+    c.Text(status, Rect(list.left + 4, connTop, Width(list) - 8, 18), Weight::Medium, 11.5f, stCol);
+
+    D2D1_RECT_F field = Rect(list.left, connTop + 22.0f, Width(list), 30.0f);
+    uint32_t fid = Ui::Id("cal.url.in");
+    bool clearBtn = !m.calEdit.empty();
+    D2D1_RECT_F clrRect = Rect(field.right - 26.0f, field.top + 3.0f, 24.0f, 24.0f);
+    Ui::Hit fh = ui.Button(fid, field);
+    c.Fill(field, 15.0f, t.track.Alpha(0.75f));
+    c.Stroke(field, 15.0f, m.calErr ? kDanger : m.calFocus ? t.accent : fh.hover ? t.text.Alpha(0.4f) : t.hairTop,
+             (m.calFocus || m.calErr) ? 1.5f : 1.0f);
+    c.Icon(glyph::Calendar, {field.left + 16.0f, (field.top + field.bottom) / 2}, 15.0f, m.calFocus ? t.accentHi : t.textDim);
+
+    D2D1_RECT_F textR = {field.left + 30.0f, field.top, field.right - (clearBtn ? 30.0f : 10.0f), field.bottom};
+    if (m.calFocus) {
+        if (m.calEdit.empty()) {
+            c.Text(L"https://calendar.google.com/calendar/ical/.../basic.ics", textR, Weight::Light, 11.5f, t.textDim);
+        } else {
+            float tw = c.Measure(m.calEdit, Weight::Regular, 12.0f);
+            float avail = (std::max)(20.0f, Width(textR) - 6.0f);
+            float dx = (std::max)(0.0f, tw - avail);
+            c.PushClip(textR);
+            c.TextOnce(m.calEdit, Rect(textR.left - dx, textR.top, (std::max)(Width(textR), tw + 16.0f), Height(textR)),
+                       Weight::Regular, 12.0f, t.text);
+            c.PopClip();
+            if (std::fmod(ui.Now(), 1.0) < 0.55) {
+                float cx = textR.left + (std::min)(tw, avail) + 1.5f;
+                c.Line({cx, field.top + 8.0f}, {cx, field.bottom - 8.0f}, t.text, 1.5f);
+            }
+        }
+        if (std::fmod(ui.Now(), 1.0) < 0.55 && m.calEdit.empty()) {
+            c.Line({textR.left + 1.5f, field.top + 8.0f}, {textR.left + 1.5f, field.bottom - 8.0f}, t.text, 1.5f);
+        }
+        ui.KeepAlive();
+        if (ui.In().pressed && !Inside(connectZone, ui.In().mouse)) m.calFocus = false;
+    } else if (m.calEdit.empty()) {
+        c.Text(L"Paste or type iCal (.ics) URL...", textR, Weight::Regular, 11.5f, t.textDim);
+    } else {
+        c.PushClip(textR);
+        c.TextOnce(m.calEdit, textR, Weight::Regular, 12.0f, t.text);
+        c.PopClip();
     }
-    if (TextBtn(ui, t, "cal.ln.google", Rect(list.left, by, bw, 26), L"Connect Google Calendar", true)) m.StartCalWait(true);
-    if (TextBtn(ui, t, "cal.ln.any", Rect(list.left + bw + 10, by, bw, 26), L"Use a copied link", false)) m.StartCalWait(false);
+    if (clearBtn && w::IconBtn(ui, t, Ui::Id("cal.url.clr"), {clrRect.left + 12.0f, (field.top + field.bottom) / 2}, 22.0f, glyph::Close, 13.0f)) {
+        m.calEdit.clear();
+        m.calErr = false;
+        m.calFocus = true;
+    } else if (fh.clicked && !m.calFocus && !(clearBtn && Inside(clrRect, ui.In().mouse))) {
+        m.calFocus = true;
+        m.calErr = false;
+    }
+
+    float by = connTop + 58.0f, totalW = Width(list);
+    bool compactBtns = totalW < 340.0f;
+    float gap = compactBtns ? 6.0f : 8.0f;
+    float pasteW = compactBtns ? 62.0f : 72.0f;
+    float addW = compactBtns ? 72.0f : 82.0f;
+    float googW = (std::max)(96.0f, totalW - pasteW - addW - 2.0f * gap);
+    if (TextBtn(ui, t, "cal.url.paste", Rect(list.left, by, pasteW, 26.0f), L"Paste", false))
+        m.PasteCalClipboard();
+    if (TextBtn(ui, t, "cal.url.add", Rect(list.left + pasteW + gap, by, addW, 26.0f), L"Connect", !m.calEdit.empty())) {
+        if (m.calEdit.empty()) m.calFocus = true, m.calErr = false;
+        else m.CommitCalUrl();
+    }
+    if (TextBtn(ui, t, "cal.ln.google", Rect(list.right - googW, by, googW, 26.0f),
+                compactBtns ? L"Google Cal" : L"Google Calendar", m.calEdit.empty()))
+        m.StartCalWait(true);
 }
 
 }
@@ -483,12 +551,18 @@ void DrawCalendar(PageCtx& p, float k) {
     D2D1_RECT_F right = narrow ? Rect(list.left + 4, list.bottom - 30, Width(list) - 8, 24) : Rect(list.left + Width(list) * 0.4f, list.bottom - 30, Width(list) * 0.6f - 4, 24);
     D2D1_RECT_F connect = Rect(list.right - 150, list.bottom - 30, 150, 24);
     size_t count = m.cals.Day(sy, sm, sd).size(); // linked and your own: a game added from the scores counts without a link too
-    if (m.calWaiting) { // connecting: what to copy, and a way out
-        c.Text(L"Copy the “Secret address in iCal format”", Rect(list.left + 4, list.bottom - 28, Width(list) - 90, 20), Weight::Medium, narrow ? 11.0f : 12.5f, t.accentHi);
+    if (m.calWaiting) { // connecting: quick shortcut to the paste input view or cancel
+        c.Text(L"Listening for copied link — click Paste URL", Rect(list.left + 4, list.bottom - 28, Width(list) - 166, 20), Weight::Medium, narrow ? 10.5f : 12.0f, t.accentHi);
+        if (TextBtn(ui, t, "cal.wait.paste", Rect(list.right - 162, list.bottom - 30, 76, 24), L"Paste URL", true)) m.calLinks = true, m.calFocus = true;
         if (TextBtn(ui, t, "cal.wait.x", Rect(list.right - 80, list.bottom - 30, 80, 24), L"Cancel", false)) m.StopCalWait();
-    } else if (!m.cals.Linked() && count == 0) { // nothing connected, nothing of your own that day: one tap opens google calendar's settings, the copied link does the rest
-        if (TextBtn(ui, t, "cal.connect", connect, L"Connect calendar", true)) m.StartCalWait(true);
-        if (ui.RClick(connect)) m.calLinks = true; // outlook, icloud, any link
+    } else if (!m.cals.Linked() && count == 0) { // nothing connected yet: open inline iCal URL field + clipboard watcher
+        if (TextBtn(ui, t, "cal.connect", connect, L"Connect calendar", true)) {
+            m.calLinks = true;
+            m.calFocus = true;
+            m.calErr = false;
+            m.StartCalWait(false);
+        }
+        if (ui.RClick(connect)) m.calLinks = true, m.calFocus = true; // outlook, icloud, any link
     } else if (count > 0) { // the day has events: they open in the month's place
         if (TextBtn(ui, t, "cal.events", Rect(right.right - 110, right.top, 110, 24), std::to_wstring(count) + (count == 1 ? L" event" : L" events"), true)) m.calAgenda = true;
     } else {
