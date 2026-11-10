@@ -148,15 +148,20 @@ bool Drawer::Create(HINSTANCE instance) {
 }
 
 void Drawer::ShowIsland() {
+    if (zoomActive || opened || peeking || hidden) return;
     if (desk && model.deskApps && !(deskView && !model.LongPill()) && !hidden && !opened && !peeking) { // over apps the long pill takes this call: the small one never drops. the desktop keeps its own form
         longHeld = true;
         SyncDesk();
         SetTimer(hwnd, kLongTimer, model.IslandLingerMs((UINT)cfg.closeMs), nullptr);
         return;
     }
+    if (WantLongPill() && !desk->Editing()) { // desktop is handled by the long pill: never drop the compact pill behind it
+        SyncDesk();
+        return;
+    }
     if (model.Glassy()) SampleBehind();
     SampleInk();
-    if (hidden || opened || peeking || !EnsureDev()) return;
+    if (hidden || opened || peeking || zoomActive || !EnsureDev()) return;
     KillTimer(hwnd, kReleaseTimer); // keep gpu alive
     KillTimer(hwnd, kCloseTimer);
     zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
@@ -314,6 +319,14 @@ void Drawer::Open() {
     float pillH0 = kIslandH;
     bool wasRestingPill = islandLook && !opened;
     bool wasClosingZoom = zoomActive && !opened;
+    float longLen = 0, longThick = 0;
+    bool fromLongSameEdge = !fromPill && !opened && desk && desk->MorphShape(edgeNow, longLen, longThick);
+    if (fromLongSameEdge) {
+        fromPill = true;
+        pillW0 = (std::min)(Span(), longLen + 2 * cfg.fillet);
+        pillH0 = (std::max)(kIslandH, longThick);
+    }
+    if (desk && (desk->Up() || desk->Visible()) && model.openAnim == Model::kAnimZoom && !opened) desk->HideNow();
     grow = grow || fromPill; // expanding out of the island: width morphs as it drops
     island = islandLook = false;
     if (!EnsureDev()) return; // gpu may have been freed while idle
@@ -462,7 +475,8 @@ void Drawer::Close() {
     model.CloseCal();
     model.SetLive(false, false);
     if (model.openAnim == Model::kAnimZoom && wasOpenedOrZoom && spring.value > 1.0f && !dragging) {
-        bool toPill = Stays() && !(desk && desk->Up()) && !followTo && !stage && !hidden;
+        bool longTarget = WantLongPill() || (desk && desk->Up());
+        bool toPill = Stays() && !longTarget && !followTo && !stage && !hidden;
         bool fromOpenZoom = wasOpened && (!zoomActive || zoomSpring.value >= 0.90f);
         bool wasClosingZoom = zoomActive && !wasOpened && zoomSpring.target <= 0.0f;
         if (!wasClosingZoom) {
@@ -515,8 +529,9 @@ void Drawer::Toggle() {
 bool Drawer::Stays() const { return PillStays(model) || (model.pillDesk && deskView); }
 
 void Drawer::SyncStay() {
-    if (desk && desk->Up()) { // the long pill is the desktop's: no second one beside it
-        if (island && !opened && !peeking && !MouseIn()) Close();
+    if (opened || zoomActive) return; // never spawn or toggle the compact pill while Zoom Fade is opening or closing
+    if (WantLongPill() || (desk && desk->Up())) { // the long pill owns the desktop: retract any compact pill so both never stack
+        if (island && !opened && !peeking) Close();
         stayWasAlways = false;
         return;
     }
@@ -1389,7 +1404,7 @@ void Drawer::Frame() {
             zoomBodyXform = D2D1::Matrix3x2F::Identity();
             zoomInvScale = 1.0f;
             zoomAlpha = 1.0f;
-            if (zoomToPill && !followTo && !stage && !hidden && Stays() && !(desk && desk->Up())) {
+            if (zoomToPill && !followTo && !stage && !hidden && Stays() && !WantLongPill() && !(desk && desk->Up())) {
                 zoomToPill = zoomFromPill = zoomDrawPill = false;
                 island = islandLook = true;
                 spring.value = spring.target = kIslandH;
@@ -1398,6 +1413,7 @@ void Drawer::Frame() {
                 SyncDesk();
             } else {
                 zoomToPill = zoomFromPill = zoomDrawPill = false;
+                island = islandLook = false;
                 spring.value = spring.target = 0;
                 spring.vel = 0;
             }
