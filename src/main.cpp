@@ -425,19 +425,15 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                               : L"Round " + std::to_wstring(app->model->focusRound) + L", " + std::to_wstring(app->model->focusMin) + L" min";
                 MessageBeep(MB_ICONASTERISK);
                 if (app->model->PillsWanted()) {
-                    if (app->drawer->IsOpened()) {
-                        app->drawer->Peek(title, detail, glyph::Timer); // already open: switch to Tools cleanly without spawning a competing popup
-                    } else {
-                        sys::Toast toast;
-                        toast.app = L"Focus";
-                        toast.aumid = L"astraeus.timer";
-                        toast.launch = L"astraeus:tools";
-                        toast.title = title;
-                        toast.body = detail;
-                        toast.iconGlyph = glyph::Timer;
-                        toast.silent = true; // MessageBeep already sounded
-                        app->drawer->PeekToast(std::move(toast));
-                    }
+                    sys::Toast toast;
+                    toast.app = L"Focus";
+                    toast.aumid = L"astraeus.timer";
+                    toast.launch = L"astraeus:tools";
+                    toast.title = title;
+                    toast.body = detail;
+                    toast.iconGlyph = glyph::Timer;
+                    toast.silent = true; // MessageBeep already sounded
+                    app->drawer->PeekToast(std::move(toast));
                 } else {
                     app->drawer->Peek(title, detail);
                     Notify(title, detail.c_str());
@@ -447,19 +443,15 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::wstring detail = app->model->TimerName() + L" timer is up";
                 MessageBeep(MB_ICONASTERISK);
                 if (app->model->PillsWanted()) {
-                    if (app->drawer->IsOpened()) {
-                        app->drawer->Peek(L"Timer finished", detail, glyph::Timer);
-                    } else {
-                        sys::Toast toast;
-                        toast.app = L"Timer";
-                        toast.aumid = L"astraeus.timer";
-                        toast.launch = L"astraeus:tools";
-                        toast.title = L"Timer finished";
-                        toast.body = detail;
-                        toast.iconGlyph = glyph::Timer;
-                        toast.silent = true; // MessageBeep already sounded
-                        app->drawer->PeekToast(std::move(toast));
-                    }
+                    sys::Toast toast;
+                    toast.app = L"Timer";
+                    toast.aumid = L"astraeus.timer";
+                    toast.launch = L"astraeus:tools";
+                    toast.title = L"Timer finished";
+                    toast.body = detail;
+                    toast.iconGlyph = glyph::Timer;
+                    toast.silent = true; // MessageBeep already sounded
+                    app->drawer->PeekToast(std::move(toast));
                 } else {
                     app->drawer->Peek(L"Timer finished", detail); // in-app drop banner
                     Notify(L"Timer finished", detail.c_str()); // plus system toast

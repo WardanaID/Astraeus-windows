@@ -166,7 +166,7 @@ LRESULT DeskPill::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         input.down = false;
         input.released = true;
         Poke();
-        if (!editing && !leaving && was && onOpen) onOpen();
+        if (!editing && !leaving && wantUp && was && onOpen) onOpen();
         return 0;
     }
     case WM_RBUTTONUP:
@@ -296,7 +296,9 @@ void DeskPill::FitWindow() {
     D2D1_RECT_F b = editing ? D2D1_RECT_F{0, 0, MW, MH} : shapeShift ? Reach(kPad) : Box(Goal(), kPad);
     view = {std::floor(b.left * scale) / scale, std::floor(b.top * scale) / scale};
     int w = (int)std::ceil((b.right - view.x) * scale), h = (int)std::ceil((b.bottom - view.y) * scale);
-    SetWindowPos(hwnd, HWND_TOPMOST, monitor.left + (int)std::lround(view.x * scale), monitor.top + (int)std::lround(view.y * scale), w, h, SWP_NOACTIVATE);
+    bool raise = wantUp || editing;
+    SetWindowPos(hwnd, raise ? HWND_TOPMOST : nullptr, monitor.left + (int)std::lround(view.x * scale), monitor.top + (int)std::lround(view.y * scale), w, h,
+                 SWP_NOACTIVATE | (raise ? 0 : SWP_NOZORDER));
     if (ctx && !SizeBuffers((UINT)(std::max)(w, 1), (UINT)(std::max)(h, 1))) FreeDev(); // the next frame builds it again at this size
 }
 

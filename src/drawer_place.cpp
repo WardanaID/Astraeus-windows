@@ -347,6 +347,12 @@ void Drawer::Retract() { // the open panel and every hover state gone at once, n
         KillTimer(hwnd, kPeekTimer);
         KillTimer(hwnd, kPeekExpandTimer);
         armed = peeking = dragging = island = islandLook = peekLook = peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = grow = false;
+        peekFromPill = peekRetracting = false;
+        peekRetractH = kNotifOneH;
+        closingToPeek = false;
+        menuCloseAlpha = 0.0f;
+        menuCloseScale = 1.0f;
+        menuPeekSpring = anim::Spring{};
         zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
         zoomSpring = anim::Spring{};
         zoomAlpha = zoomInvScale = 1.0f;
