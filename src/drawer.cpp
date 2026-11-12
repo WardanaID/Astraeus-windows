@@ -169,6 +169,9 @@ void Drawer::ShowIsland() {
     KillTimer(hwnd, kCloseTimer);
     KillTimer(hwnd, kPeekExpandTimer);
     peekLook = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    islandVizHot = false;
+    islandCtlBtn = -1;
+    islandCtlT = 0.0f;
     zoomActive = zoomFromPill = zoomToPill = zoomDrawPill = false;
     zoomAlpha = zoomInvScale = 1.0f;
     zoomBodyXform = D2D1::Matrix3x2F::Identity();
@@ -183,6 +186,42 @@ void Drawer::ShowIsland() {
     widthSpring.damp = 0.72f;
     if (widthSpring.value < 1.0f) widthSpring.value = IslandSpan();
     Redraw();
+}
+
+D2D1_RECT_F Drawer::IslandVizZone(float h) const {
+    float hh = (std::max)(h, kIslandH);
+    if (Side()) {
+        float inner = kIslandSide - 2 * cfg.fillet - 20, mid = winW / 2;
+        float dir = edgeNow == 1 ? -1.0f : 1.0f;
+        float end = mid + dir * inner / 2;
+        float a = end - dir * (islandVizHot ? 74.0f : 32.0f), b = end + dir * 10.0f;
+        return {0.0f, (std::min)(a, b), hh, (std::max)(a, b)};
+    }
+    float inner = kIslandW - 2 * cfg.fillet - 20;
+    float x1 = winW / 2 + inner / 2;
+    return islandVizHot ? Rect(x1 - 74.0f, 0.0f, 84.0f, hh) : Rect(x1 - 32.0f, 0.0f, 42.0f, hh);
+}
+
+D2D1_RECT_F Drawer::IslandCtlRect(int idx, float h) const {
+    float hh = (std::max)(h, kIslandH);
+    if (idx < 0 || idx > 2) return D2D1_RECT_F{};
+    if (Side()) {
+        float inner = kIslandSide - 2 * cfg.fillet - 20, mid = winW / 2;
+        float dir = edgeNow == 1 ? -1.0f : 1.0f;
+        float end = mid + dir * inner / 2;
+        float cy = end - dir * (57.0f - idx * 22.0f);
+        return {1.0f, cy - 11.0f, hh - 1.0f, cy + 11.0f};
+    }
+    float inner = kIslandW - 2 * cfg.fillet - 20;
+    float x1 = winW / 2 + inner / 2;
+    return Rect(x1 - 68.0f + idx * 22.0f, 2.0f, 22.0f, hh - 6.0f);
+}
+
+int Drawer::IslandCtlAt(D2D1_POINT_2F p, float h) const {
+    if (!IslandMusicActive() || !islandVizHot || islandCtlT < 0.25f) return -1;
+    for (int i = 0; i < 3; ++i)
+        if (Inside(IslandCtlRect(i, h), p)) return i;
+    return -1;
 }
 
 void Drawer::SampleBehind() {
@@ -347,6 +386,9 @@ void Drawer::Open() {
     if (desk && (desk->Up() || desk->Visible()) && model.openAnim == Model::kAnimZoom && !opened) desk->HideNow();
     grow = grow || fromPill; // expanding out of the island or notification pop-up: width morphs as it drops
     island = islandLook = peekLook = peekToastNow = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    islandVizHot = false;
+    islandCtlBtn = -1;
+    islandCtlT = 0.0f;
     peekHoverRow = peekCloseRow = -1;
     peekShownRows = 0;
     peekStack.clear();
@@ -476,6 +518,9 @@ void Drawer::Close() {
     KillTimer(hwnd, kPeekTimer);
     KillTimer(hwnd, kPeekExpandTimer);
     peeking = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    islandVizHot = false;
+    islandCtlBtn = -1;
+    islandCtlT = 0.0f;
     peekHoverRow = peekCloseRow = -1;
     bool wasOpened = opened;
     bool wasOpenedOrZoom = opened || zoomActive;
@@ -908,6 +953,9 @@ void Drawer::DismissPeek() {
     KillTimer(hwnd, kPeekTimer);
     KillTimer(hwnd, kPeekExpandTimer);
     peeking = peekHot = peekCloseHot = peekExpanded = peekPrevHot = peekNextHot = peekClearHot = false;
+    islandVizHot = false;
+    islandCtlBtn = -1;
+    islandCtlT = 0.0f;
     peekHoverRow = peekCloseRow = -1;
     peekStack.clear();
     peekIdx = 0;
@@ -1112,7 +1160,19 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         KillTimer(hwnd, kCloseTimer); // back inside, cancel pending close
-        if (islandLook && !islandHot) { // entering the island: light up its expand hint
+        bool ctlDirty = false;
+        if (islandLook && !opened) {
+            bool musicUp = IslandMusicActive();
+            float hCur = (std::max)(kIslandH, spring.value);
+            bool vHot = musicUp && Inside(IslandVizZone(hCur), p);
+            int cBtn = (vHot && islandCtlT > 0.25f) ? IslandCtlAt(p, hCur) : -1;
+            if (vHot != islandVizHot || cBtn != islandCtlBtn) {
+                islandVizHot = vHot;
+                islandCtlBtn = cBtn;
+                ctlDirty = true;
+            }
+        }
+        if (islandLook && (!islandHot || ctlDirty)) { // entering the island or moving across mini visualizer controls
             islandHot = true;
             Redraw();
         }
@@ -1128,7 +1188,8 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         tracking = false;
         KillTimer(hwnd, kHoverTimer);
         armed = false;
-        islandHot = false;
+        islandHot = islandVizHot = false;
+        islandCtlBtn = -1;
         if (peeking) {
             KillTimer(hwnd, kPeekExpandTimer);
             peekHot = peekCloseHot = peekPrevHot = peekNextHot = peekClearHot = false;
@@ -1301,6 +1362,17 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     n.launch = peekToast.launch;
                     sys::OpenNotifApp(n);
                     DismissPeekItem(peekIdx);
+                    return 0;
+                }
+            }
+            if (island && !peeking && !opened && IslandMusicActive()) {
+                float hCur = (std::max)(kIslandH, spring.value);
+                int btn = IslandCtlAt(p, hCur);
+                if (btn >= 0) {
+                    if (btn == 0 && model.track.canPrev) model.PrevTrack();
+                    else if (btn == 1) model.media.TogglePlay();
+                    else if (btn == 2 && model.track.canNext) model.NextTrack();
+                    Redraw();
                     return 0;
                 }
             }
@@ -1922,6 +1994,8 @@ void Drawer::Frame() {
     bool themes = StepTheme(dt);
     themes = anim::Approach(glassShadeNow, glassShade, kShadeRate, dt, 0.004f) || themes; // the glass tint fading to what's behind it now
     themes = anim::Approach(clearInk, clearInkGoal, kShadeRate, dt, 0.004f) || themes; // clear's ink crosses over, it doesn't snap
+    float ctlGoal = (islandLook && !opened && !peeking && IslandMusicActive() && islandVizHot) ? 1.0f : 0.0f;
+    bool ctlMoving = anim::Approach(islandCtlT, ctlGoal, model.reduceMotion ? 40.0f : 14.0f, dt, 0.004f);
     if (themes && desk) desk->Refresh();
     SyncCover();
     if (peekToastNow && ctx) {
@@ -1946,7 +2020,7 @@ void Drawer::Frame() {
     ui.Keyboard(keys && model.a11yKeys);
     bool pillCached = false, skyCached = false;
     if (islandLook && !opened && !peeking && !Side() && !moving && !dragging && !themes && h > 0.5f && std::fabs(h - spring.target) < 0.01f &&
-        !(model.vizWave && model.vizOn)) { // resting pill; the waveform runs behind its still parts, so it's drawn whole
+        !islandVizHot && islandCtlT <= 0.004f && !(model.vizWave && model.vizOn)) { // resting pill; the waveform runs behind its still parts, so it's drawn whole
         shapeXform = EdgeXform();
         pillCached = PillLayer(h, IslandSpan());
     }
@@ -2134,7 +2208,7 @@ void Drawer::Frame() {
         GlassBlur((model.GlassBlur() / 100.0f) * glassFade);
         GlassMask(outline.Get());
     }
-    bool fast = moving || dragging || uiBusy || themes || pageT < 1; // anything actively animating
+    bool fast = moving || dragging || uiBusy || themes || pageT < 1 || ctlMoving; // anything actively animating
     if (cfg.perfLog) {
         int why = moving ? 0 : dragging ? 1 : uiBusy ? 2 : (themes || pageT < 1) ? 3 : ambient ? 4 : 5;
         ++perfWhy[why];
