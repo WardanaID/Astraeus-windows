@@ -357,10 +357,10 @@ void Drawer::SyncCover() {
         if (coverSrc && cfg.albumCol) SetMedia(Make(mediaSeed = theme::FromBmp(coverSrc.Get()))); // tint media page from art
         else SetMedia(shellTo); // no art, follow shell theme
     }
-    if (coverSrc && !cover && SUCCEEDED(ctx->CreateBitmapFromWicBitmap(coverSrc.Get(), nullptr, &cover))) // gpu upload, redone after device loss
+    if (ctx && coverSrc && !cover && SUCCEEDED(ctx->CreateBitmapFromWicBitmap(coverSrc.Get(), nullptr, &cover))) // gpu upload, redone after device loss
         coverBlur = Blur(cover.Get());
     bool showing = opened || (spring.value > 0.5f && !islandLook); // the open panel, or it still retracting: a pill or the strip never needs it
-    if (!model.artBack || !model.showArt || !cover || !showing) coverBack.Reset(); // freed as the panel goes, baked again on the next open
+    if (!ctx || !model.artBack || !model.showArt || !cover || !showing) coverBack.Reset(); // freed as the panel goes, baked again on the next open
     else if (!coverBack && backFailed != coverId) {
         coverBack = BakeBackdrop(ctx.Get(), cover.Get());
         backFailed = coverBack ? 0 : coverId; // a cover that won't bake isn't tried every frame
