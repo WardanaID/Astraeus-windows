@@ -96,6 +96,9 @@ public:
     void NextTrack() { SkipTrack(1); }
     void PrevTrack() { SkipTrack(-1); }
     bool StepTrackTransition(); // expires Next/Previous step cleanly if the same track kept playing
+    bool StepTrackCue(); // expires Now playing / Stopped playing transition cleanly
+    bool TrackCueActive() const { return trackCue != kCueNone; }
+    float TrackCueProgress() const; // 0..1 normalized progress while Start/Stop cue is active
     static bool HasMusicMeta(const sys::Track& t); // true only when both title and artist have non-whitespace characters
     void OnBright(WPARAM value); // -1 = no controllable display
     void OnWx();
@@ -227,6 +230,13 @@ public:
     ULONGLONG trackSkipAt = 0;
     std::wstring trackSkipWasTitle, trackSkipWasArtist;
     static constexpr ULONGLONG kTrackSkipMs = 1500;
+    enum TrackCue { kCueNone = 0, kCueStart, kCueStop };
+    int trackCue = kCueNone;
+    ULONGLONG trackCueAt = 0;
+    bool wasTrackPlaying = false;
+    bool cueRealTrack = false;
+    std::wstring cueTitle, cueArtist;
+    static constexpr ULONGLONG kTrackCueMs = 1350;
     sys::LyricSrc lyrics; // synced lyrics, looked up only while the fullscreen player wants them
 
     sys::Radios radios;

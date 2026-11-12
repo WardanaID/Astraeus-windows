@@ -431,7 +431,7 @@ void DeskPill::Text(int kind, std::wstring& text, int& icon, bool& idle) const {
     icon = 0;
     text = model.DeskItemText(kind, icon);
     idle = text.empty() && icon == 0;
-    if (kind == Model::kDMusic && !idle) text = SongStem(model.track.title); // from the whole title: the model's cap can cut a closing bracket off
+    if (kind == Model::kDMusic && !idle && !model.TrackCueActive()) text = SongStem(model.track.title); // from the whole title: the model's cap can cut a closing bracket off
 }
 
 float DeskPill::ItemW(int kind, const std::wstring& text, int icon, bool idle, float thick) {
@@ -681,7 +681,38 @@ void DeskPill::DrawPill(const Theme& t, const Pose& p, float alpha) {
             c.Icon(it.icon, {x + is / 2, cy}, is, lit.Alpha(a), true);
             tx += is + 5 * k;
         }
-        if (!it.text.empty()) c.Text(it.text, Rect(tx, cy - box / 2, x + it.w - tx + 2, box), Weight::Medium, size, (it.kind == Model::kDClock || it.kind == Model::kDScore ? ink : dim).Alpha(a));
+        if (!it.text.empty()) {
+            if (it.kind == Model::kDMusic && !it.idle && model.TrackCueActive()) {
+                float pCue = model.TrackCueProgress();
+                float cueW = (std::max)(8.0f, x + it.w - tx + 2);
+                D2D1_RECT_F tb = Rect(tx, cy - box / 2, cueW, box);
+                c.PushClip(Rect(tx - 2, cy - box / 2 - 2, cueW + 4, box + 4));
+                if (model.trackCue == Model::kCueStart) {
+                    if (pCue < 0.52f) {
+                        float u = anim::Clamp01(pCue / 0.18f);
+                        float dy = (1.0f - u) * 6.0f;
+                        c.Text(L"Now playing", Rect(tb.left, tb.top + dy, Width(tb), Height(tb)), Weight::Medium, size, lit.Alpha(a * u));
+                    } else if (pCue < 0.92f) {
+                        float u = anim::EaseOut(anim::Clamp01((pCue - 0.52f) / 0.40f));
+                        c.Text(L"Now playing", Rect(tb.left, tb.top - 7.0f * u, Width(tb), Height(tb)), Weight::Medium, size, lit.Alpha(a * (1.0f - u)));
+                        c.Text(SongStem(model.track.title), Rect(tb.left, tb.top + 7.0f * (1.0f - u), Width(tb), Height(tb)), Weight::Medium, size, dim.Alpha(a * u));
+                    } else {
+                        c.Text(SongStem(model.track.title), tb, Weight::Medium, size, dim.Alpha(a));
+                    }
+                } else {
+                    float inU = anim::EaseOut(anim::Clamp01(pCue / 0.18f));
+                    float outU = anim::EaseOut(anim::Clamp01((pCue - 0.72f) / 0.28f));
+                    float stopA = pCue < 0.72f ? inU : (1.0f - outU);
+                    float stopDy = pCue < 0.18f ? (1.0f - inU) * 6.0f : (pCue >= 0.72f ? -6.0f * outU : 0.0f);
+                    c.Text(L"Stopped playing", Rect(tb.left, tb.top + stopDy, Width(tb), Height(tb)), Weight::Medium, size, lit.Alpha(a * stopA));
+                    if (model.cueRealTrack && outU > 0.01f)
+                        c.Text(SongStem(model.track.title), Rect(tb.left, tb.top + 6.0f * (1.0f - outU), Width(tb), Height(tb)), Weight::Medium, size, dim.Alpha(a * outU));
+                }
+                c.PopClip();
+            } else {
+                c.Text(it.text, Rect(tx, cy - box / 2, x + it.w - tx + 2, box), Weight::Medium, size, (it.kind == Model::kDClock || it.kind == Model::kDScore ? ink : dim).Alpha(a));
+            }
+        }
     }
     ctx->SetTransform(D2D1::Matrix3x2F::Translation(-view.x, -view.y));
 }
@@ -779,9 +810,11 @@ void DeskPill::Frame(const Theme& shell) {
         }
     }
     if (FillNow() == kFillGlass || editing) LoadWall(editing);
+    moving = model.StepTrackCue() || moving;
     moving = anim::Approach(inkDark, inkGoal, 8, dt, 0.004f) || moving;
     SyncCover();
     bool barsMoving = StepBars(dt, now);
+    if (model.TrackCueActive()) moving = true;
     canvas->NewFrame();
     ctx->BeginDraw();
     ctx->SetTransform(D2D1::Matrix3x2F::Identity());
