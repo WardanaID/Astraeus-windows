@@ -19,7 +19,7 @@ struct Spring {
     float stiff = 320;
     float damp = 0.62f; // damping ratio, <1 gives the drip bounce
 
-    bool Step(float dt) {
+    bool Step(float dt, float epsP = 0.2f, float epsV = 3) {
         const float sub = 1.0f / 240; // fixed substeps keep it stable on long frames
         const float c = 2 * damp * std::sqrt(stiff); // ratio to real damping coeff
         while (dt > 0) {
@@ -28,7 +28,7 @@ struct Spring {
             value += vel * s; // semi-implicit euler
             dt -= s;
         }
-        if (std::fabs(target - value) < 0.2f && std::fabs(vel) < 3) { // settled, sub-pixel and slow
+        if (std::fabs(target - value) < epsP && std::fabs(vel) < epsV) { // settled, sub-pixel and slow
             value = target;
             vel = 0;
             return false;

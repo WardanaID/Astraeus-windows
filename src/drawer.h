@@ -182,16 +182,16 @@ private:
     void BuildStrips(); // invisible hover strips on the other screens
     void FreeStrips();
     static LRESULT CALLBACK StripProc(HWND, UINT, WPARAM, LPARAM);
-    ComPtr<ID2D1Geometry> BuildShape(float h, float w) const;
+    ComPtr<ID2D1Geometry> BuildShape(float h, float w, float floatTopGap = -1.0f) const;
     void DrawBody(float h, float dt, double now);
-    void DrawPeek(float h);
+    void DrawPeek(float h, float alphaMul = 1.0f, float morphT = 1.0f, bool drawHandle = true);
     void DrawHint(float h); // the page's tip, just outside the panel
     static constexpr float kHintRoom = 40; // extra window depth while a tip shows
     const wchar_t* hintText = nullptr;
     D2D1_RECT_F hintRect{}; // window coords
     float hintFade = 0;
-    bool DrawIsland(float h, float dt, double now); // true while its visualizer is moving
-    bool DrawIslandSide(float h, float a); // the side edges' vertical pill: art, the song turned sideways, bars
+    bool DrawIsland(float h, float dt, double now, bool drawHandle = true); // true while its visualizer is moving
+    bool DrawIslandSide(float h, float a, bool drawHandle = true); // the side edges' vertical pill: art, the song turned sideways, bars
     bool StepIslandBars(float dt, double now); // mini visualizer levels, true while moving
     void PaintShape(ID2D1Geometry* shape, float h); // the panel or pill body: fill, smoked glass, sheen, rim
     D2D1_RECT_F Visible() const; // the corner of the surface the window shows
@@ -271,7 +271,7 @@ private:
     float TintFor(float lum) const; // how much of it, over a page this bright
     void SyncWallTone(); // clear: is the wallpaper dark or light
     void SampleInk(); // clear: black or white for the resting pill, from what's right beside it
-    bool DrawPillNow(float h, float dt, double now); // the resting pill, in clear's ink when that's the look
+    bool DrawPillNow(float h, float dt, double now, bool drawHandle = true); // the resting pill, in clear's ink when that's the look
     int shadeTick = 0; // seconds toward the next look behind the glass
     void SampleShade(); // glass, while showing: what's behind it now, every half minute
     void SetMedia(const Theme& t);
@@ -346,6 +346,20 @@ private:
     ULONGLONG lastToastSoundAt = 0; // throttle chime on rapid notification bursts
     float peekReach = kPeekH; // target depth of the current peek
     float peekPrimaryBot = 62; // bottom y of the primary notification section when expanded
+    bool peekFromPill = false; // notification emerged smoothly out of a resting pill (music/idle)
+    bool peekRetracting = false; // notification is morphing smoothly back into the resting pill
+    float peekRetractH = kNotifOneH; // height where retraction started for normalized morph progress
+    anim::Spring menuPeekSpring; // 0..1 open/close animation of the menu-wide notification banner when opened == true
+    bool closingToPeek = false; // true while closing an open menu dynamically into a notification pop-up
+    float menuCloseAlpha = 0.0f; // departing menu content opacity during closingToPeek
+    float menuCloseScale = 1.0f; // departing menu content scale when closing with Zoom Fade
+    bool MenuPeekShown() const { return opened && (peeking || (peekToastNow && menuPeekSpring.value > 0.01f)); }
+    D2D1_RECT_F MenuPeekBox() const;
+    float PeekTopOffset() const;
+    float PeekLeftOffset() const;
+    float PeekInnerWidth() const;
+    void DrawMenuPeek(float h);
+    void DrawPeekToastCard(float originX0, float innerW, float topY, float boxH, float centerMidX, float alpha, bool drawHandle = true);
     struct PeekItem {
         sys::Toast toast;
         ComPtr<ID2D1Bitmap1> bmp;
@@ -355,14 +369,19 @@ private:
     sys::Toast peekToast;
     ComPtr<ID2D1Bitmap1> peekBmp; // app/sender icon for the current notification pop-up
     float PeekSpan() const {
-        if (Side()) return kIslandSide;
+        if (Side()) return opened ? CW() : kIslandSide;
         float cap = W > 0 ? W : kNotifExpandW;
         if (!peekToastNow) return (std::min)(kHudW, cap);
+        if (opened) return Span();
         return peekExpanded ? (std::min)(kNotifExpandW, (std::max)(kNotifW, cap)) : (std::min)(kNotifW, cap);
     }
     float ActivePeekSpan() const {
-        float target = PeekSpan();
-        return widthSpring.value > 1.0f && peekToastNow ? (std::min)(W > 0 ? W : target, (std::max)(kNotifW, widthSpring.value)) : target;
+        float want = PeekSpan();
+        if (widthSpring.value > 1.0f && (peekToastNow || peekRetracting)) {
+            float lo = (peekFromPill || peekRetracting) ? (std::min)(IslandSpan() * 0.94f, want) : want * 0.92f;
+            return (std::min)(W > 0 ? W : Span(), (std::max)(lo, widthSpring.value));
+        }
+        return want;
     }
     D2D1_RECT_F PeekCloseBox(float h) const;
     D2D1_RECT_F PeekPrevBox() const;
