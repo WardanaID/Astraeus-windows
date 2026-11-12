@@ -856,8 +856,9 @@ bool Drawer::DrawIsland(float h, float dt, double now) {
     }
 
     D2D1_RECT_F art = Rect(x0, cy - 10, 20, 20); // cover thumbnail, rounded like an app icon
-    const float barsW = 22; // mini visualizer on the right, or the expand chevron on hover
-    float tx = art.right + 7, tw = inner - (tx - x0) - barsW - 6;
+    float ctlT = anim::Clamp01(islandCtlT);
+    const float barsW = 22.0f + 48.0f * ctlT; // compact mini visualizer (22px), expanding smoothly on hover to 70px inline controls
+    float tx = art.right + 7, tw = (std::max)(24.0f, inner - (tx - x0) - barsW - 6);
     bool wave = model.vizWave && model.vizOn; // the waveform look: bars the whole width of the pill, behind the cover and the song
     if (wave) {
         static Waveform pillWave;
@@ -876,18 +877,41 @@ bool Drawer::DrawIsland(float h, float dt, double now) {
         if (!model.track.artist.empty()) canvas->Text(model.track.artist, Rect(tx, cy + 1, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(a));
     }
 
-    float bx = x0 + inner - barsW;
-    if (islandHot) { // chevron: tap opens the full panel
-        if (!still) return false;
-        float ccx = bx + barsW / 2;
-        Color ink = mt.accentHi.Alpha(a);
-        canvas->Line({ccx - 6, cy - 3}, {ccx, cy + 3}, ink, 2);
-        canvas->Line({ccx, cy + 3}, {ccx + 6, cy - 3}, ink, 2);
-        return wave && moving; // the waveform keeps moving under the chevron
+    float x1 = x0 + inner;
+    float bx = x1 - 22.0f;
+    if (ctlT > 0.01f && still) {
+        float ca = ctlT * a;
+        D2D1_RECT_F dock = Rect(x1 - 70.0f * ctlT, cy - 12.0f, 70.0f * ctlT, 24.0f);
+        canvas->Fill(dock, 12.0f, t.cardHi.Alpha(0.62f * ca));
+        canvas->Stroke(dock, 12.0f, Color{1, 1, 1, 0.12f * ca}, 1.0f);
+        if (ctlT > 0.25f) {
+            int icons[3] = {glyph::Prev, model.track.playing ? glyph::Pause : glyph::Play, glyph::Next};
+            bool en[3] = {model.track.canPrev, true, model.track.canNext};
+            for (int i = 0; i < 3; ++i) {
+                D2D1_RECT_F rb = IslandCtlRect(i, h);
+                bool hov = (islandCtlBtn == i);
+                if (hov && en[i])
+                    canvas->Fill(Rect(rb.left + 1.0f, rb.top + 2.0f, Width(rb) - 2.0f, Height(rb) - 4.0f), 9.0f, mt.accent.Alpha(0.30f * ca));
+                Color icCol = !en[i] ? t.textLow.Alpha(0.45f * ca) : hov ? mt.accentHi.Alpha(ca) : t.text.Alpha(0.92f * ca);
+                canvas->Icon(icons[i], {(rb.left + rb.right) / 2, cy}, i == 1 ? 15.0f : 14.0f, icCol, true);
+            }
+        }
     }
-    for (int i = 0; bars && model.vizOn && !wave && i < 4; ++i) { // the waveform already moves behind it all
-        float v = islandBars[i], bh = 3 + 11 * v;
-        canvas->Fill(Rect(bx + i * 6, cy - bh / 2, 3.5f, bh), 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(a));
+    if (ctlT < 0.99f) {
+        if (islandHot && !model.vizOn) { // if visualizer bars are off, keep chevron hint when hovering outside controls
+            if (still) {
+                float ccx = bx + 11.0f;
+                Color ink = mt.accentHi.Alpha((1.0f - ctlT) * a);
+                canvas->Line({ccx - 6, cy - 3}, {ccx, cy + 3}, ink, 2);
+                canvas->Line({ccx, cy + 3}, {ccx + 6, cy - 3}, ink, 2);
+            }
+        } else {
+            float barA = (1.0f - ctlT) * a;
+            for (int i = 0; bars && model.vizOn && !wave && i < 4; ++i) {
+                float v = islandBars[i], bh = 3 + 11 * v;
+                canvas->Fill(Rect(bx + i * 6, cy - bh / 2, 3.5f, bh), 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(barA));
+            }
+        }
     }
     return moving;
 }
@@ -1015,23 +1039,47 @@ bool Drawer::DrawIslandSide(float h, float a) {
         canvas->Fill(art, 5, mt.cardHi.Alpha(a));
         canvas->Icon(glyph::Music, {X(dc), artC}, 12, mt.accentHi.Alpha(a), true);
     }
-    float t0 = artC + dir * 17, t1 = barsC - dir * 17, len = std::fabs(t1 - t0), tc = (t0 + t1) / 2;
+    float t0 = artC + dir * 17, t1 = end - dir * (28.0f + 46.0f * ctlT), len = (std::max)(18.0f, std::fabs(t1 - t0)), tc = (t0 + t1) / 2;
     D2D1_MATRIX_3X2_F was;
     ctx->GetTransform(&was);
     ctx->SetTransform(D2D1::Matrix3x2F::Rotation(left ? -90.0f : 90.0f) * D2D1::Matrix3x2F::Translation(X(dc), tc) * was); // turned text, centered in its stretch
     canvas->Text(model.track.title, Rect(-len / 2, -12, len, 14), Weight::Medium, 10.5f, t.text.Alpha(a));
     if (!model.track.artist.empty()) canvas->Text(model.track.artist, Rect(-len / 2, 1, len, 12), Weight::Light, 9.5f, t.textDim.Alpha(a));
     ctx->SetTransform(was);
-    if (islandHot) { // chevron pointing into the screen: tap opens the full panel
-        Color ink = mt.accentHi.Alpha(a);
-        float s = left ? 1.0f : -1.0f;
-        canvas->Line({X(dc) - 3 * s, barsC - 6}, {X(dc) + 3 * s, barsC}, ink, 2);
-        canvas->Line({X(dc) + 3 * s, barsC}, {X(dc) - 3 * s, barsC + 6}, ink, 2);
-        return false;
+    if (ctlT > 0.01f) {
+        float ca = ctlT * a;
+        float d0 = end - dir * 70.0f * ctlT, d1 = end;
+        D2D1_RECT_F dock = {X(dc) - 12.0f, (std::min)(d0, d1), X(dc) + 12.0f, (std::max)(d0, d1)};
+        canvas->Fill(dock, 12.0f, t.cardHi.Alpha(0.62f * ca));
+        canvas->Stroke(dock, 12.0f, Color{1, 1, 1, 0.12f * ca}, 1.0f);
+        if (ctlT > 0.25f) {
+            int icons[3] = {glyph::Prev, model.track.playing ? glyph::Pause : glyph::Play, glyph::Next};
+            bool en[3] = {model.track.canPrev, true, model.track.canNext};
+            for (int i = 0; i < 3; ++i) {
+                float cyCtl = end - dir * (57.0f - i * 22.0f);
+                bool hov = (islandCtlBtn == i);
+                if (hov && en[i])
+                    canvas->Fill(Rect(X(dc) - 10.0f, cyCtl - 9.0f, 20.0f, 18.0f), 9.0f, mt.accent.Alpha(0.30f * ca));
+                Color icCol = !en[i] ? t.textLow.Alpha(0.45f * ca) : hov ? mt.accentHi.Alpha(ca) : t.text.Alpha(0.92f * ca);
+                ctx->SetTransform(D2D1::Matrix3x2F::Rotation(left ? -90.0f : 90.0f) * D2D1::Matrix3x2F::Translation(X(dc), cyCtl) * was);
+                canvas->Icon(icons[i], {0.0f, 0.0f}, i == 1 ? 15.0f : 14.0f, icCol, true);
+                ctx->SetTransform(was);
+            }
+        }
     }
-    for (int i = 0; i < 4; ++i) { // bars grow across the pill
-        float v = islandBars[i], bl = 3 + 11 * v, y = barsC - 11 + i * 6;
-        canvas->Fill({X(dc) - bl / 2, y, X(dc) + bl / 2, y + 3.5f}, 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(a));
+    if (ctlT < 0.99f) {
+        if (islandHot && !model.vizOn) {
+            Color ink = mt.accentHi.Alpha((1.0f - ctlT) * a);
+            float s = left ? 1.0f : -1.0f;
+            canvas->Line({X(dc) - 3 * s, barsC - 6}, {X(dc) + 3 * s, barsC}, ink, 2);
+            canvas->Line({X(dc) + 3 * s, barsC}, {X(dc) - 3 * s, barsC + 6}, ink, 2);
+        } else {
+            float barA = (1.0f - ctlT) * a;
+            for (int i = 0; i < 4; ++i) { // bars grow across the pill
+                float v = islandBars[i], bl = 3 + 11 * v, y = barsC - 11 + i * 6;
+                canvas->Fill({X(dc) - bl / 2, y, X(dc) + bl / 2, y + 3.5f}, 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(barA));
+            }
+        }
     }
     return true;
 }

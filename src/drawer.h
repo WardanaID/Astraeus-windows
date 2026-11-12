@@ -316,8 +316,15 @@ private:
     static constexpr float kIslandH = 34, kIslandW = 260; // island pill size in dips, width includes the shoulders
     static constexpr float kIslandSide = 240; // on a side edge the song runs along the pill like a book spine
     bool islandHot = false; // mouse over the island: show the expand hint
+    bool islandVizHot = false; // mouse over mini visualizer / inline controls in compact pill
+    int islandCtlBtn = -1; // hovered mini control in compact pill: 0 = Prev, 1 = Play/Pause, 2 = Next
+    float islandCtlT = 0.0f; // 0..1 smooth transition revealing mini controls over mini visualizer
     bool stayWasAlways = false; // the island was set to always last second, to notice it being switched off
     float islandBars[4] = {}; // mini visualizer levels, eased per frame
+    bool IslandMusicActive() const { return islandLook && model.pillMusic && model.hasTrack && !model.track.title.empty(); }
+    D2D1_RECT_F IslandVizZone(float h) const; // hover target around mini visualizer (expands to keep Prev/Play/Next active)
+    D2D1_RECT_F IslandCtlRect(int idx, float h) const; // clickable pill control box (0 = Prev, 1 = Play/Pause, 2 = Next)
+    int IslandCtlAt(D2D1_POINT_2F p, float h) const;
     anim::Spring spring;
     bool opened = false, dragging = false, peeking = false;
     bool island = false; // island pill is up (or dropping)
