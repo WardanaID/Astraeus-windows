@@ -582,6 +582,11 @@ void Drawer::Answer() {
 }
 
 void Drawer::OnSecond() {
+    if (model.StepTrackTransition()) {
+        SyncStay();
+        if (desk) desk->Refresh();
+        Redraw();
+    }
     if (model.facesDue) {
         model.facesDue = false; // set again only if the page draws again
         Redraw();
@@ -1418,6 +1423,8 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_APP_MEDIA:
         model.OnMedia();
+        SyncStay();
+        if (desk) desk->Refresh();
         Redraw();
         return 0;
     case WM_APP_FEEDS:

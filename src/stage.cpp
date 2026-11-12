@@ -297,8 +297,8 @@ LRESULT Stage::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         Keys((UINT)wp);
         if (wp == VK_ESCAPE || wp == 'F' || wp == VK_F11) Leave();
         else if (wp == VK_SPACE) model.media.TogglePlay();
-        else if (wp == VK_RIGHT) model.media.Next();
-        else if (wp == VK_LEFT) model.media.Previous();
+        else if (wp == VK_RIGHT) model.NextTrack();
+        else if (wp == VK_LEFT) model.PrevTrack();
         else if (wp == VK_OEM_4 || wp == VK_OEM_6) { // [ and ]: lyrics a touch earlier or later, remembered
             model.lyricOffsetMs = (std::clamp)(model.lyricOffsetMs + (wp == VK_OEM_6 ? 100 : -100), -3000, 3000);
             if (!lyrKey.empty()) model.lyrics.SetOffset(lyrKey, model.lyricOffsetMs); // this song's own, kept for next time
@@ -504,7 +504,7 @@ D2D1_RECT_F Stage::LyricRect() const {
 
 void Stage::SyncLyrics(double now) { // asks for the song's lyrics once its length is known, picks them up when they land
     const sys::Track& tr = model.track;
-    std::wstring key = model.fullLyrics && role != kCover && model.hasTrack && tr.music && !tr.title.empty() ? sys::LyricSrc::Key(tr.title, tr.artist) : L""; // off in settings: the classic layout
+    std::wstring key = model.fullLyrics && model.trackSkipDir == 0 && role != kCover && model.hasTrack && tr.music && !tr.title.empty() ? sys::LyricSrc::Key(tr.title, tr.artist) : L""; // off in settings: the classic layout
     if (key != lyrKey) {
         lyrKey = key;
         lyrDoc.reset();
@@ -745,9 +745,9 @@ void Stage::Player(float show, float lyr) { // the cover big on the left and the
     if (alpha > 0.01f) { // hidden: not drawn at all
         bool layer = alpha < 0.999f;
         if (layer) ctx->PushLayer(D2D1::LayerParameters1(row, nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), alpha), nullptr);
-        if (w::IconBtn(ui, ctl, Ui::Id("st.prev"), {ccx - 100 * ck, y}, 60 * ck, glyph::Prev, 38 * ck, has && tr.canPrev)) model.media.Previous();
+        if (w::IconBtn(ui, ctl, Ui::Id("st.prev"), {ccx - 100 * ck, y}, 60 * ck, glyph::Prev, 38 * ck, has && tr.canPrev)) model.PrevTrack();
         if (w::PlayBtn(ui, ctl, Ui::Id("st.play"), {ccx, y}, 84 * ck, has && tr.playing, has)) model.media.TogglePlay();
-        if (w::IconBtn(ui, ctl, Ui::Id("st.next"), {ccx + 100 * ck, y}, 60 * ck, glyph::Next, 38 * ck, has && tr.canNext)) model.media.Next();
+        if (w::IconBtn(ui, ctl, Ui::Id("st.next"), {ccx + 100 * ck, y}, 60 * ck, glyph::Next, 38 * ck, has && tr.canNext)) model.NextTrack();
         if (mix(s0.extrasOn, s1.extrasOn) > 0.5f) { // arranged away: the three that matter stay
             D2D1_POINT_2F shuf = {ccx - 196 * ck, y}, rep = {ccx + 196 * ck, y};
             if (w::IconBtn(ui, ctl, Ui::Id("st.shuffle"), shuf, 48 * ck, glyph::Shuffle, 26 * ck, has && tr.canShuf, has && tr.shuffle)) model.media.ToggleShuffle();

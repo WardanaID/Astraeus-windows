@@ -111,9 +111,9 @@ void Player(PageCtx& p, const D2D1_RECT_F& r) {
     bool slim = Height(r) < 160; // sidebar card: a lighter transport row
     float bs = slim ? 0.78f : 1.0f, step = 54 * bs;
     const Theme ct = theme::Lift(t); // the play button leans toward the ink, so it stands clear of the glow behind it
-    if (w::IconBtn(ui, ct, Ui::Id("ov.prev"), {tx + 16 * bs, cy}, 38 * bs, glyph::Prev, 24 * bs, has && tr.canPrev)) p.m.media.Previous();
+    if (w::IconBtn(ui, ct, Ui::Id("ov.prev"), {tx + 16 * bs, cy}, 38 * bs, glyph::Prev, 24 * bs, has && tr.canPrev)) p.m.PrevTrack();
     if (w::PlayBtn(ui, ct, Ui::Id("ov.play"), {tx + 16 * bs + step, cy}, 44 * bs, has && tr.playing, has)) p.m.media.TogglePlay();
-    if (w::IconBtn(ui, ct, Ui::Id("ov.next"), {tx + 16 * bs + 2 * step, cy}, 38 * bs, glyph::Next, 24 * bs, has && tr.canNext)) p.m.media.Next();
+    if (w::IconBtn(ui, ct, Ui::Id("ov.next"), {tx + 16 * bs + 2 * step, cy}, 38 * bs, glyph::Next, 24 * bs, has && tr.canNext)) p.m.NextTrack();
 
     if (!has || tr.duration > 0) { // app reports no length: no bar, a stuck empty one would mislead
         float y = r.bottom - pad + 4, x1 = r.right - pad; // progress line hugs card bottom

@@ -92,6 +92,11 @@ public:
 
     void OnStats(); // pull worker results under lock
     void OnMedia();
+    void SkipTrack(int dir); // +1 = next, -1 = previous; displays transitional Next/Previous step instead of flashing Nothing playing
+    void NextTrack() { SkipTrack(1); }
+    void PrevTrack() { SkipTrack(-1); }
+    bool StepTrackTransition(); // expires Next/Previous step cleanly if the same track kept playing
+    static bool HasMusicMeta(const sys::Track& t); // true only when both title and artist have non-whitespace characters
     void OnBright(WPARAM value); // -1 = no controllable display
     void OnWx();
     void OpenBt(); // starts bt watcher, only while menu shown
@@ -218,6 +223,10 @@ public:
     sys::Media media;
     sys::Track track;
     bool hasTrack = false;
+    int trackSkipDir = 0; // +1 = Next, -1 = Previous transitional title state while next track loads
+    ULONGLONG trackSkipAt = 0;
+    std::wstring trackSkipWasTitle, trackSkipWasArtist;
+    static constexpr ULONGLONG kTrackSkipMs = 1500;
     sys::LyricSrc lyrics; // synced lyrics, looked up only while the fullscreen player wants them
 
     sys::Radios radios;

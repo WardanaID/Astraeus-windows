@@ -493,11 +493,18 @@ WF::IAsyncOperation<Session> Survey(MediaP s, Manager mgr) {
     uint64_t holdFor = 0;
     {
         std::lock_guard lock(s->mu);
-        auto best = [&](bool musicOnly) {
+        auto hasSongMeta = [](const MediaSt::Seen& e) {
+            auto nonBlank = [](const std::wstring& s) {
+                return std::any_of(s.begin(), s.end(), [](wchar_t c) { return !iswspace(c); });
+            };
+            return nonBlank(e.title) && nonBlank(e.artist);
+        };
+        auto best = [&](bool musicOnly, bool metaOnly) {
             const std::wstring* found = nullptr;
             uint64_t newest = 0;
             for (const auto& [id, e] : s->seen)
-                if (e.playing && (!musicOnly || e.music) && e.since >= newest) found = &id, newest = e.since;
+                if (e.playing && (!musicOnly || e.music) && (!metaOnly || hasSongMeta(e)) && e.since >= newest)
+                    found = &id, newest = e.since;
             return found;
         };
         const std::wstring* chosen = nullptr;
@@ -507,12 +514,13 @@ WF::IAsyncOperation<Session> Survey(MediaP s, Manager mgr) {
             chosen = &pinned->first;
         } else {
             if (!s->pin.empty()) s->pin.clear(); // the app closed: back to following
-            const std::wstring* heard = best(true);
-            if (!heard) heard = best(false);
+            const std::wstring* heard = best(true, true);
+            if (!heard) heard = best(false, true);
             bool holding = now_ != s->seen.end() && !now_->second.playing && now_->second.stopped && now - now_->second.stopped < kHoldMs;
-            if (holding && (!heard || s->seen[*heard].since < now_->second.stopped)) holdFor = kHoldMs - (now - now_->second.stopped) + 50, chosen = &now_->first; // between songs
+            if (holding && hasSongMeta(now_->second) && (!heard || s->seen[*heard].since < now_->second.stopped))
+                holdFor = kHoldMs - (now - now_->second.stopped) + 50, chosen = &now_->first; // between songs
             else if (heard) chosen = heard;
-            else if (now_ != s->seen.end()) chosen = &now_->first;
+            else if (now_ != s->seen.end() && hasSongMeta(now_->second)) chosen = &now_->first;
             else if (auto c = s->seen.find(cur); c != s->seen.end()) chosen = &c->first;
             else if (!s->seen.empty()) chosen = &s->seen.begin()->first;
         }
