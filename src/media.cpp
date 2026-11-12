@@ -177,7 +177,7 @@ bool MusicSite(const Track& t) { // a browser can't say which site plays: the wi
 }
 
 bool SameTrack(const Track& a, const Track& b) { // true = nothing worth repainting
-    if (a.app != b.app || a.title != b.title || a.artist != b.artist || a.album != b.album || a.music != b.music) return false;
+    if (a.app != b.app || a.appId != b.appId || a.title != b.title || a.artist != b.artist || a.album != b.album || a.music != b.music) return false;
     if (a.playing != b.playing || a.canPrev != b.canPrev || a.canNext != b.canNext || a.canSeek != b.canSeek ||
         a.canShuf != b.canShuf || a.canRep != b.canRep || a.shuffle != b.shuffle ||
         a.repeat != b.repeat || a.rate != b.rate || a.duration != b.duration ||
@@ -557,6 +557,7 @@ WF::IAsyncAction Refresh(MediaP s) { // pull full state, publish if changed
     const bool has = static_cast<bool>(sel);
     if (sel) {
         selId = ToW(sel.SourceAppUserModelId()); // raw id, compared to detect session switch
+        t.appId = selId;
         t.app = AppName(selId);
         try { // each read guarded separately so one failure keeps the rest
             if (auto props = co_await sel.TryGetMediaPropertiesAsync()) {

@@ -103,7 +103,7 @@ void Player(PageCtx& p, const D2D1_RECT_F& r) {
 
     float tx = art.right + 20, tw = r.right - pad - tx; // text column right of art
     float ty = r.top + pad + 4 * k;
-    c.TextSp(fmt::Upper(has ? tr.app : L"Idle"), Rect(tx, ty, tw, 16), Weight::Medium, 10.5f, t.accent, 1.4f);
+    DrawMediaSource(p, "ov.srcapp", Rect(tx, ty, tw, 16), t, 1.4f);
     c.Text(has && !tr.title.empty() ? tr.title : L"Nothing playing", Rect(tx, ty + 21 * k, tw, 24), Weight::Medium, 17, t.text);
     c.Text(has ? tr.artist : L"Play something in any app", Rect(tx, ty + 21 * k + 25, tw, 20), Weight::Light, 13, t.textDim);
 

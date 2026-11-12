@@ -55,6 +55,7 @@ void ForgetShelfArt(); // the device is going: drop the shelf's preview bitmaps
 void ShelfClosed(); // the panel went up: the shelf's menus and open card go with it
 void ShelfToast(const wchar_t* text); // a word at the bottom of the shelf page, on its next frame
 void FlipArt(PageCtx& p, const D2D1_RECT_F& r, float radius, float iconPx); // album art that turns over on a track change
+void DrawMediaSource(PageCtx& p, const char* idPrefix, const D2D1_RECT_F& r, const Theme& t, float tracking, Align align = Align::Left); // clickable media app label that opens/focuses its window
 float DrawPrefs(PageCtx& p, const D2D1_RECT_F& area, bool live, bool tall); // the newer settings cards, returns their height
 void DrawBt(PageCtx& p, float t); // bluetooth menu overlay, t = open anim 0..1
 void DrawWifi(PageCtx& p, float t); // wi-fi network picker overlay, same sheet style

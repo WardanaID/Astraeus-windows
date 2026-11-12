@@ -2,9 +2,11 @@
 
 #include <windows.h>
 #include <appmodel.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <propkey.h>
 #include <winsqlite/winsqlite3.h>
 
 #include <algorithm>
@@ -492,6 +494,305 @@ bool Shell(const std::wstring& target) {
     return ShellExecuteExW(&sei) != FALSE;
 }
 
+std::wstring LowerW(std::wstring s) {
+    for (wchar_t& c : s) c = static_cast<wchar_t>(towlower(c));
+    return s;
+}
+
+bool StartsWI(std::wstring_view s, std::wstring_view prefix) {
+    return s.size() >= prefix.size() && _wcsnicmp(s.data(), prefix.data(), prefix.size()) == 0;
+}
+
+bool IsHex16W(const std::wstring& s) {
+    return s.size() == 16 && std::all_of(s.begin(), s.end(), [](wchar_t c) { return iswxdigit(c) != 0; });
+}
+
+std::wstring ExeNameOf(const std::wstring& path) {
+    size_t slash = path.find_last_of(L"\\/");
+    return LowerW(slash == std::wstring::npos ? path : path.substr(slash + 1));
+}
+
+std::wstring StemOfExe(std::wstring file) {
+    file = ExeNameOf(file);
+    if (file.size() > 4 && file.compare(file.size() - 4, 4, L".exe") == 0) file.resize(file.size() - 4);
+    return file;
+}
+
+std::wstring ExtractHostHint(const std::wstring& s) {  // pulls site token like "whatsapp" from embedded https://web.whatsapp.com/... in toast launch args
+    std::wstring low = LowerW(s);
+    size_t pos = low.find(L"https://");
+    if (pos == std::wstring::npos) pos = low.find(L"http://");
+    if (pos == std::wstring::npos) return {};
+    pos += low[pos + 4] == L's' ? 8 : 7;
+    size_t end = low.find_first_of(L"/?#|: \t\r\n\"", pos);
+    std::wstring host = low.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
+    if (host.empty()) return {};
+    static constexpr const wchar_t* kSkip[] = {L"www", L"web", L"app", L"mail", L"chat", L"com", L"net", L"org", L"io", L"co", L"id"};
+    std::wstring best;
+    for (size_t i = 0; i < host.size();) {
+        size_t dot = host.find(L'.', i);
+        std::wstring part = host.substr(i, dot == std::wstring::npos ? std::wstring::npos : dot - i);
+        bool generic = part.size() < 3 || std::any_of(std::begin(kSkip), std::end(kSkip), [&](const wchar_t* k) { return part == k; });
+        if (!generic && part.size() > best.size()) best = part;
+        if (dot == std::wstring::npos) break;
+        i = dot + 1;
+    }
+    return best;
+}
+
+bool IsBrowserStem(const std::wstring& stem) {
+    static constexpr const wchar_t* kBrowsers[] = {L"chrome", L"msedge", L"firefox", L"zen", L"brave", L"opera", L"vivaldi"};
+    return std::any_of(std::begin(kBrowsers), std::end(kBrowsers), [&](const wchar_t* b) { return stem == b; });
+}
+
+struct AppIdentity {
+    std::wstring aumid;
+    std::wstring shellAumid;
+    std::wstring family;
+    std::wstring targetExePath;
+    std::wstring targetExeName;
+    std::wstring appLower;
+    std::vector<std::wstring> stems;
+    bool isPwa = false;
+    bool isBrowser = false;
+    bool hexId = false;
+};
+
+void AddStem(std::vector<std::wstring>& stems, std::wstring s) {
+    s = LowerW(std::move(s));
+    if (s.size() < 2 || s == L"app" || s == L"browser" || s == L"application") return;
+    if (std::find(stems.begin(), stems.end(), s) == stems.end()) stems.push_back(std::move(s));
+}
+
+AppIdentity ResolveIdentity(const std::wstring& aumid, const std::wstring& appName) {
+    AppIdentity id;
+    id.aumid = aumid;
+    id.family = Family(aumid);
+    id.isPwa = LowerW(aumid).find(L"_crx_") != std::wstring::npos;
+    id.hexId = IsHex16W(aumid);
+    std::wstring dispName = appName;
+
+    HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (!aumid.empty()) {
+        IShellItem2* item = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName((kAppsFolder + aumid).c_str(), nullptr, IID_PPV_ARGS(&item))) && item) {
+            PWSTR s = nullptr;
+            if (SUCCEEDED(item->GetString(PKEY_Link_TargetParsingPath, &s)) && s) {
+                id.targetExePath = LowerW(s);
+                id.targetExeName = ExeNameOf(id.targetExePath);
+                CoTaskMemFree(s);
+            }
+            s = nullptr;
+            if (SUCCEEDED(item->GetString(PKEY_AppUserModel_ID, &s)) && s) {
+                id.shellAumid = s;
+                CoTaskMemFree(s);
+            }
+            if (dispName.empty()) {
+                s = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &s)) && s) {
+                    dispName = s;
+                    CoTaskMemFree(s);
+                }
+            }
+            item->Release();
+        }
+    }
+    if (SUCCEEDED(co)) CoUninitialize();
+
+    id.appLower = LowerW(dispName);
+    std::wstring aumLow = LowerW(aumid);
+    if (id.targetExePath.empty() && aumLow.size() > 4 && aumLow.compare(aumLow.size() - 4, 4, L".exe") == 0) {
+        id.targetExePath = aumLow;
+        id.targetExeName = ExeNameOf(aumLow);
+    }
+    if (!id.targetExeName.empty()) {
+        std::wstring stem = StemOfExe(id.targetExeName);
+        if (!id.isPwa) {
+            if (stem == L"chrome_proxy") AddStem(id.stems, L"chrome");
+            else if (stem == L"msedge_proxy") AddStem(id.stems, L"msedge");
+            else AddStem(id.stems, stem);
+        }
+    }
+    if (!id.isPwa && !id.hexId) {
+        if (aumLow == L"chrome" || aumLow.rfind(L"chrome.", 0) == 0 || id.appLower.find(L"chrome") != std::wstring::npos) AddStem(id.stems, L"chrome");
+        if (aumLow == L"msedge" || aumLow.rfind(L"msedge.", 0) == 0 || id.appLower.find(L"edge") != std::wstring::npos) AddStem(id.stems, L"msedge");
+        if (aumLow.find(L"firefox") != std::wstring::npos || id.appLower.find(L"firefox") != std::wstring::npos) AddStem(id.stems, L"firefox");
+        if (id.appLower == L"zen" || aumLow.find(L"zen") != std::wstring::npos) AddStem(id.stems, L"zen");
+        if (id.appLower.find(L"brave") != std::wstring::npos || aumLow.find(L"brave") != std::wstring::npos) AddStem(id.stems, L"brave");
+        if (id.appLower.find(L"opera") != std::wstring::npos || aumLow.find(L"opera") != std::wstring::npos) AddStem(id.stems, L"opera");
+        if (id.appLower.find(L"vivaldi") != std::wstring::npos || aumLow.find(L"vivaldi") != std::wstring::npos) AddStem(id.stems, L"vivaldi");
+        if (id.appLower.find(L"spotify") != std::wstring::npos || aumLow.find(L"spotify") != std::wstring::npos) AddStem(id.stems, L"spotify");
+        if (id.appLower.find(L"discord") != std::wstring::npos || aumLow.find(L"discord") != std::wstring::npos) AddStem(id.stems, L"discord");
+        if (id.appLower.find(L"telegram") != std::wstring::npos || aumLow.find(L"telegram") != std::wstring::npos) AddStem(id.stems, L"telegram");
+        if (id.appLower.find(L"whatsapp") != std::wstring::npos || aumLow.find(L"whatsapp") != std::wstring::npos) AddStem(id.stems, L"whatsapp");
+        if (id.appLower == L"vlc" || aumLow.find(L"vlc") != std::wstring::npos) AddStem(id.stems, L"vlc");
+        AddStem(id.stems, LastSegment(aumid));
+        AddStem(id.stems, id.appLower);
+    }
+    id.isBrowser = id.appLower == L"browser" || id.hexId ||
+                   std::any_of(id.stems.begin(), id.stems.end(), IsBrowserStem) ||
+                   IsBrowserStem(StemOfExe(id.targetExeName));
+    return id;
+}
+
+bool ProcessIdentity(DWORD pid, std::wstring& exePath, std::wstring& pkgFamily) {
+    exePath.clear();
+    pkgFamily.clear();
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) return false;
+    wchar_t buf[MAX_PATH] = {};
+    DWORD sz = MAX_PATH;
+    if (QueryFullProcessImageNameW(proc, 0, buf, &sz)) exePath = LowerW(std::wstring(buf, sz));
+    UINT32 flen = 0;
+    if (GetPackageFamilyName(proc, &flen, nullptr) == ERROR_INSUFFICIENT_BUFFER && flen > 0) {
+        std::wstring fam(flen, L'\0');
+        if (GetPackageFamilyName(proc, &flen, fam.data()) == ERROR_SUCCESS) {
+            fam.resize(wcslen(fam.c_str()));
+            pkgFamily = fam;
+        }
+    }
+    CloseHandle(proc);
+    return !exePath.empty() || !pkgFamily.empty();
+}
+
+std::wstring WindowAumid(HWND w) {
+    std::wstring out;
+    IPropertyStore* ps = nullptr;
+    if (SUCCEEDED(SHGetPropertyStoreForWindow(w, IID_PPV_ARGS(&ps))) && ps) {
+        PROPVARIANT pv;
+        PropVariantInit(&pv);
+        if (SUCCEEDED(ps->GetValue(PKEY_AppUserModel_ID, &pv)) && pv.vt == VT_LPWSTR && pv.pwszVal) out = pv.pwszVal;
+        PropVariantClear(&pv);
+        ps->Release();
+    }
+    return out;
+}
+
+bool FocusWindow(HWND target) {
+    if (!target || !IsWindow(target)) return false;
+    AllowSetForegroundWindow(ASFW_ANY);
+    if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+    HWND fg = GetForegroundWindow();
+    DWORD curTid = GetCurrentThreadId();
+    DWORD fgTid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    DWORD tgtTid = GetWindowThreadProcessId(target, nullptr);
+    bool attFg = fgTid && fgTid != curTid && AttachThreadInput(curTid, fgTid, TRUE) != FALSE;
+    bool attTgt = tgtTid && tgtTid != curTid && tgtTid != fgTid && AttachThreadInput(curTid, tgtTid, TRUE) != FALSE;
+    BringWindowToTop(target);
+    BOOL ok = SetForegroundWindow(target);
+    if (attTgt) AttachThreadInput(curTid, tgtTid, FALSE);
+    if (attFg) AttachThreadInput(curTid, fgTid, FALSE);
+    return ok != FALSE || GetForegroundWindow() == target || !IsIconic(target);
+}
+
+struct WinSearch {
+    const AppIdentity* id = nullptr;
+    std::wstring titleHint;
+    std::wstring urlSiteHint;
+    DWORD selfPid = 0;
+    HWND best = nullptr;
+    int bestScore = 0;
+};
+
+struct FrameChildProbe {
+    DWORD hostPid = 0;
+    std::wstring exePath;
+    std::wstring pkgFamily;
+    bool found = false;
+};
+
+BOOL CALLBACK FindCoreChild(HWND child, LPARAM lp) {
+    auto* p = reinterpret_cast<FrameChildProbe*>(lp);
+    DWORD cpid = 0;
+    GetWindowThreadProcessId(child, &cpid);
+    if (!cpid || cpid == p->hostPid) return TRUE;
+    wchar_t cls[64] = {};
+    if (GetClassNameW(child, cls, 64) && wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0) {
+        ProcessIdentity(cpid, p->exePath, p->pkgFamily);
+        p->found = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+BOOL CALLBACK ScoreWindow(HWND w, LPARAM lp) {
+    auto* s = reinterpret_cast<WinSearch*>(lp);
+    if (!IsWindowVisible(w)) return TRUE;
+    LONG_PTR ex = GetWindowLongPtrW(w, GWL_EXSTYLE);
+    if (ex & WS_EX_TOOLWINDOW) return TRUE;
+    if (!(ex & WS_EX_APPWINDOW) && GetWindow(w, GW_OWNER) != nullptr) return TRUE;
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) return TRUE;
+    RECT rc{};
+    if (!IsIconic(w) && (!GetWindowRect(w, &rc) || rc.right - rc.left <= 0 || rc.bottom - rc.top <= 0)) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (!pid || pid == s->selfPid) return TRUE;
+
+    std::wstring winExe, winFam;
+    ProcessIdentity(pid, winExe, winFam);
+    bool isAppFrame = ExeNameOf(winExe) == L"applicationframehost.exe";
+    if (isAppFrame) {
+        FrameChildProbe probe{pid};
+        EnumChildWindows(w, FindCoreChild, reinterpret_cast<LPARAM>(&probe));
+        if (probe.found) {
+            if (!probe.exePath.empty()) winExe = probe.exePath;
+            if (!probe.pkgFamily.empty()) winFam = probe.pkgFamily;
+        }
+    }
+
+    std::wstring winAumid = WindowAumid(w);
+    std::wstring winExeName = ExeNameOf(winExe);
+    std::wstring winStem = StemOfExe(winExeName);
+    wchar_t titleBuf[512] = {};
+    GetWindowTextW(w, titleBuf, 512);
+    std::wstring titleLow = LowerW(titleBuf);
+
+    const AppIdentity& id = *s->id;
+    int score = 0;
+    if (!winAumid.empty() && ((!id.aumid.empty() && _wcsicmp(winAumid.c_str(), id.aumid.c_str()) == 0) ||
+                              (!id.shellAumid.empty() && _wcsicmp(winAumid.c_str(), id.shellAumid.c_str()) == 0))) {
+        score = 100;
+    } else if (!id.family.empty() && !winFam.empty() && _wcsicmp(winFam.c_str(), id.family.c_str()) == 0) {
+        score = 90;
+    } else if (!id.targetExePath.empty() && !winExe.empty() && winExe == id.targetExePath) {
+        score = 80;
+    } else if (!id.targetExeName.empty() && !winExeName.empty() && winExeName == id.targetExeName && !id.isPwa) {
+        score = 70;
+    } else if (!id.isPwa && std::find(id.stems.begin(), id.stems.end(), winStem) != id.stems.end()) {
+        score = 60;
+    } else if (isAppFrame && !id.appLower.empty() && titleLow.find(id.appLower) != std::wstring::npos) {
+        score = 45;
+    } else if ((id.appLower == L"browser" || id.hexId) && IsBrowserStem(winStem)) {
+        if (!s->titleHint.empty() && titleLow.find(s->titleHint) != std::wstring::npos) score = 50;
+        else score = 25;
+    }
+
+    if (score > 0) {
+        if (!s->urlSiteHint.empty() && titleLow.find(s->urlSiteHint) != std::wstring::npos) score += 12;
+        else if (!s->titleHint.empty() && titleLow.find(s->titleHint) != std::wstring::npos) score += 10;
+        if (!IsIconic(w)) score += 1;
+        if (score > s->bestScore) {
+            s->bestScore = score;
+            s->best = w;
+        }
+    }
+    return TRUE;
+}
+
+bool FindAndFocusWithIdentity(const AppIdentity& id, const std::wstring& titleHint, const std::wstring& urlSiteHint) {
+    if (id.aumid.empty() && id.targetExePath.empty() && id.stems.empty() && id.appLower.empty()) return false;
+    WinSearch search;
+    search.id = &id;
+    search.titleHint = titleHint.size() >= 3 ? LowerW(titleHint) : std::wstring();
+    search.urlSiteHint = urlSiteHint;
+    search.selfPid = GetCurrentProcessId();
+    EnumWindows(ScoreWindow, reinterpret_cast<LPARAM>(&search));
+    if (!search.best) return false;
+    return FocusWindow(search.best);
+}
+
 }  // namespace
 
 std::vector<Notif> ReadNotifs(size_t max, bool* ok) noexcept {
@@ -532,9 +833,28 @@ int64_t NotifStamp() noexcept {
 bool OpenNotifApp(const Notif& n) noexcept {
     try {
         AllowSetForegroundWindow(ASFW_ANY);  // the bar never activates, so let whatever we start take the foreground
-        if (LooksLikeUri(n.launch) && Shell(n.launch)) return true;  // a deep link straight to what the toast was about
+        bool isUri = LooksLikeUri(n.launch);
+        bool isHttp = isUri && (StartsWI(n.launch, L"http:") || StartsWI(n.launch, L"https:"));
+        std::wstring siteHint = ExtractHostHint(n.launch);
+        AppIdentity id = ResolveIdentity(n.aumid, n.app);
+
+        // If this toast came from an app (especially browsers like Chrome) with an existing window and not a custom app deep-link, bring that window to front instead of spawning a new window.
+        if ((!isUri || (isHttp && id.isBrowser)) && FindAndFocusWithIdentity(id, n.title, siteHint)) return true;
+        if (isUri && Shell(n.launch)) return true;  // app protocol deep-link (or web url when not already open)
         if (n.aumid.empty()) return false;
         return Shell(kAppsFolder + n.aumid);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool OpenAppWindow(const std::wstring& aumid, const std::wstring& appName, const std::wstring& titleHint) noexcept {
+    try {
+        AllowSetForegroundWindow(ASFW_ANY);
+        AppIdentity id = ResolveIdentity(aumid, appName);
+        if (FindAndFocusWithIdentity(id, titleHint, L"")) return true;
+        if (!aumid.empty() && !IsHex16W(aumid) && Shell(kAppsFolder + aumid)) return true;
+        return false;
     } catch (...) {
         return false;
     }
