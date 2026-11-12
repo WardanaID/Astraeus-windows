@@ -508,7 +508,9 @@ void Drawer::Answer() {
 }
 
 void Drawer::OnSecond() {
-    if (model.StepTrackTransition()) {
+    bool trackStepped = model.StepTrackTransition();
+    trackStepped = model.StepTrackCue() || trackStepped;
+    if (trackStepped) {
         SyncStay();
         if (desk) desk->Refresh();
         Redraw();
@@ -1377,6 +1379,10 @@ void Drawer::Frame() {
     if (lastFrame == 0) dt = 1 / 60.0f; // first frame, assume 60hz
     lastFrame = now;
 
+    if (model.StepTrackCue()) {
+        SyncStay();
+        if (desk) desk->Refresh();
+    }
     bool moving = !dragging && spring.Step(dt); // drag drives value directly
     if (!moving && !dragging) { // spring settled
         grow = false; // expansion finished, or retracted
@@ -1446,7 +1452,7 @@ void Drawer::Frame() {
     ui.Keyboard(keys && model.a11yKeys);
     bool pillCached = false, skyCached = false;
     if (islandLook && !opened && !peeking && !Side() && !moving && !dragging && !themes && h > 0.5f && std::fabs(h - spring.target) < 0.01f &&
-        !islandVizHot && islandCtlT <= 0.004f && !(model.vizWave && model.vizOn)) { // resting pill; the waveform runs behind its still parts, so it's drawn whole
+        !islandVizHot && islandCtlT <= 0.004f && !(model.vizWave && model.vizOn) && !model.TrackCueActive()) { // resting pill; the waveform runs behind its still parts, so it's drawn whole
         shapeXform = EdgeXform();
         pillCached = PillLayer(h, IslandSpan());
     }
@@ -1521,7 +1527,7 @@ void Drawer::Frame() {
         GlassBlur(model.GlassBlur() / 100.0f);
         GlassMask(outline.Get());
     }
-    bool fast = moving || dragging || uiBusy || themes || pageT < 1 || ctlMoving; // anything actively animating
+    bool fast = moving || dragging || uiBusy || themes || pageT < 1 || ctlMoving || model.TrackCueActive(); // anything actively animating
     if (cfg.perfLog) {
         int why = moving ? 0 : dragging ? 1 : uiBusy ? 2 : (themes || pageT < 1) ? 3 : ambient ? 4 : 5;
         ++perfWhy[why];

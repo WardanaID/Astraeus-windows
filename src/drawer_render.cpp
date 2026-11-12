@@ -823,6 +823,56 @@ bool Drawer::StepIslandBars(float dt, double now) {
     return moving;
 }
 
+static void DrawTrackCueText(Canvas& canvas, const Model& model, const Theme& t, const Theme& mt, float tx, float tw, float yTop, float ySub, float a) {
+    if (!model.TrackCueActive()) {
+        canvas.Text(model.track.title, Rect(tx, yTop, tw, 14), Weight::Medium, 10.5f, t.text.Alpha(a));
+        if (!model.track.artist.empty()) canvas.Text(model.track.artist, Rect(tx, ySub, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(a));
+        return;
+    }
+    float p = model.TrackCueProgress();
+    canvas.PushClip(Rect(tx - 1, yTop - 3, tw + 2, 31));
+    Color cueInk = mt.accentHi.Mix(t.text, 0.30f);
+    std::wstring subName = !model.cueTitle.empty() ? model.cueTitle : model.track.title;
+    if (model.trackCue == Model::kCueStart) {
+        if (p < 0.54f) {
+            float u = anim::EaseOut(anim::Clamp01(p / 0.18f));
+            float dy = (1.0f - u) * 7.0f;
+            canvas.Text(L"Now playing", Rect(tx, yTop + dy, tw, 14), Weight::Medium, 10.5f, cueInk.Alpha(a * u));
+            canvas.Text(model.track.title, Rect(tx, ySub + dy * 0.7f, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(0.88f * a * u));
+        } else {
+            float u = anim::EaseOut(anim::Clamp01((p - 0.54f) / 0.40f));
+            canvas.Text(L"Now playing", Rect(tx, yTop - 8.0f * u, tw, 14), Weight::Medium, 10.5f, cueInk.Alpha(a * (1.0f - u)));
+            canvas.Text(model.track.title, Rect(tx, yTop + 8.0f * (1.0f - u), tw, 14), Weight::Medium, 10.5f, t.text.Alpha(a * u));
+            if (u < 0.99f)
+                canvas.Text(model.track.title, Rect(tx, ySub - 4.0f * u, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(0.88f * a * (1.0f - u)));
+            if (!model.track.artist.empty())
+                canvas.Text(model.track.artist, Rect(tx, ySub + 6.0f * (1.0f - u), tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(a * u));
+        }
+    } else {
+        if (p < 0.20f) {
+            float u = anim::EaseOut(anim::Clamp01(p / 0.20f));
+            canvas.Text(subName, Rect(tx, yTop - 7.0f * u, tw, 14), Weight::Medium, 10.5f, t.text.Alpha(a * (1.0f - u)));
+            canvas.Text(L"Stopped playing", Rect(tx, yTop + 7.0f * (1.0f - u), tw, 14), Weight::Medium, 10.5f, cueInk.Alpha(a * u));
+            if (!subName.empty())
+                canvas.Text(subName, Rect(tx, ySub + 5.0f * (1.0f - u), tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(0.85f * a * u));
+        } else if (p < 0.72f) {
+            canvas.Text(L"Stopped playing", Rect(tx, yTop, tw, 14), Weight::Medium, 10.5f, cueInk.Alpha(a));
+            if (!subName.empty())
+                canvas.Text(subName, Rect(tx, ySub, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(0.85f * a));
+        } else {
+            float u = anim::EaseOut(anim::Clamp01((p - 0.72f) / 0.28f));
+            canvas.Text(L"Stopped playing", Rect(tx, yTop - 7.0f * u, tw, 14), Weight::Medium, 10.5f, cueInk.Alpha(a * (1.0f - u)));
+            if (!subName.empty() && model.cueRealTrack)
+                canvas.Text(subName, Rect(tx, yTop + 7.0f * (1.0f - u), tw, 14), Weight::Medium, 10.5f, t.text.Alpha(a * u));
+            else if (!subName.empty())
+                canvas.Text(subName, Rect(tx, ySub, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(0.85f * a * (1.0f - u)));
+            if (model.cueRealTrack && !model.track.artist.empty())
+                canvas.Text(model.track.artist, Rect(tx, ySub + 5.0f * (1.0f - u), tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(a * u));
+        }
+    }
+    canvas.PopClip();
+}
+
 bool Drawer::DrawPillNow(float h, float dt, double now) {
     if (!Clear()) return DrawIsland(h, dt, now);
     Theme shell = shellNow, media = mediaNow; // the pill draws from these all the way down: its ink for just this
@@ -855,6 +905,17 @@ bool Drawer::DrawIsland(float h, float dt, double now) {
         return false;
     }
 
+    float cardFade = 1.0f;
+    if (model.trackCue == Model::kCueStop && !model.cueRealTrack) {
+        float cueP = model.TrackCueProgress();
+        if (cueP > 0.72f) {
+            float idleU = anim::EaseOut(anim::Clamp01((cueP - 0.72f) / 0.28f));
+            cardFade = 1.0f - idleU;
+            if (still && idleU > 0.01f) IdleLine(*canvas, model, t, mt, x0, inner, cy, a * idleU);
+        }
+    }
+    float caCard = a * cardFade;
+
     D2D1_RECT_F art = Rect(x0, cy - 10, 20, 20); // cover thumbnail, rounded like an app icon
     float ctlT = anim::Clamp01(islandCtlT);
     const float barsW = 22.0f + 48.0f * ctlT; // compact mini visualizer (22px), expanding smoothly on hover to 70px inline controls
@@ -863,24 +924,23 @@ bool Drawer::DrawIsland(float h, float dt, double now) {
     if (wave) {
         static Waveform pillWave;
         bool alive = StepWave(pillWave, model, dt, model.track.playing);
-        if (alive) DrawWave(*canvas, pillWave, Rect(x0 - 6, cy - 13, inner + 12, 26), mt, 0.6f * a);
+        if (alive) DrawWave(*canvas, pillWave, Rect(x0 - 6, cy - 13, inner + 12, 26), mt, 0.6f * caCard);
         moving = alive && !Unseen();
     }
-    if (still) {
+    if (still && caCard > 0.01f) {
         if (cover) {
-            canvas->Art(cover.Get(), coverBlur.Get(), art, 5, a);
+            canvas->Art(cover.Get(), coverBlur.Get(), art, 5, caCard);
         } else {
-            canvas->Fill(art, 5, mt.cardHi.Alpha(a));
-            canvas->Icon(glyph::Music, {art.left + 10, art.top + 10}, 12, mt.accentHi.Alpha(a), true);
+            canvas->Fill(art, 5, mt.cardHi.Alpha(caCard));
+            canvas->Icon(glyph::Music, {art.left + 10, art.top + 10}, 12, mt.accentHi.Alpha(caCard), true);
         }
-        canvas->Text(model.track.title, Rect(tx, cy - 12, tw, 14), Weight::Medium, 10.5f, t.text.Alpha(a));
-        if (!model.track.artist.empty()) canvas->Text(model.track.artist, Rect(tx, cy + 1, tw, 12), Weight::Light, 9.5f, t.textDim.Alpha(a));
+        DrawTrackCueText(*canvas, model, t, mt, tx, tw, cy - 12, cy + 1, caCard);
     }
 
     float x1 = x0 + inner;
     float bx = x1 - 22.0f;
-    if (ctlT > 0.01f && still) {
-        float ca = ctlT * a;
+    if (ctlT > 0.01f && still && caCard > 0.01f) {
+        float ca = ctlT * caCard;
         D2D1_RECT_F dock = Rect(x1 - 70.0f * ctlT, cy - 12.0f, 70.0f * ctlT, 24.0f);
         canvas->Fill(dock, 12.0f, t.cardHi.Alpha(0.62f * ca));
         canvas->Stroke(dock, 12.0f, Color{1, 1, 1, 0.12f * ca}, 1.0f);
@@ -897,16 +957,16 @@ bool Drawer::DrawIsland(float h, float dt, double now) {
             }
         }
     }
-    if (ctlT < 0.99f) {
+    if (ctlT < 0.99f && caCard > 0.01f) {
         if (islandHot && !model.vizOn) { // if visualizer bars are off, keep chevron hint when hovering outside controls
             if (still) {
                 float ccx = bx + 11.0f;
-                Color ink = mt.accentHi.Alpha((1.0f - ctlT) * a);
+                Color ink = mt.accentHi.Alpha((1.0f - ctlT) * caCard);
                 canvas->Line({ccx - 6, cy - 3}, {ccx, cy + 3}, ink, 2);
                 canvas->Line({ccx, cy + 3}, {ccx + 6, cy - 3}, ink, 2);
             }
         } else {
-            float barA = (1.0f - ctlT) * a;
+            float barA = (1.0f - ctlT) * caCard;
             for (int i = 0; bars && model.vizOn && !wave && i < 4; ++i) {
                 float v = islandBars[i], bh = 3 + 11 * v;
                 canvas->Fill(Rect(bx + i * 6, cy - bh / 2, 3.5f, bh), 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(barA));
@@ -1030,24 +1090,42 @@ bool Drawer::DrawIslandSide(float h, float a) {
         ctx->SetTransform(was);
         return false;
     }
+    float cardFade = 1.0f;
+    if (model.trackCue == Model::kCueStop && !model.cueRealTrack) {
+        float cueP = model.TrackCueProgress();
+        if (cueP > 0.72f) {
+            float idleU = anim::EaseOut(anim::Clamp01((cueP - 0.72f) / 0.28f));
+            cardFade = 1.0f - idleU;
+            if (idleU > 0.01f) {
+                D2D1_MATRIX_3X2_F was;
+                ctx->GetTransform(&was);
+                ctx->SetTransform(D2D1::Matrix3x2F::Rotation(left ? -90.0f : 90.0f) * D2D1::Matrix3x2F::Translation(X(dc), mid) * was);
+                IdleLine(*canvas, model, t, mt, -inner / 2, inner, 0, a * idleU);
+                ctx->SetTransform(was);
+            }
+        }
+    }
+    float caCard = a * cardFade;
     float start = mid - dir * inner / 2, end = mid + dir * inner / 2;
     float artC = start + dir * 10, barsC = end - dir * 11;
     D2D1_RECT_F art = {X(dc) - 10, artC - 10, X(dc) + 10, artC + 10};
-    if (cover) {
-        canvas->Art(cover.Get(), coverBlur.Get(), art, 5, a);
-    } else {
-        canvas->Fill(art, 5, mt.cardHi.Alpha(a));
-        canvas->Icon(glyph::Music, {X(dc), artC}, 12, mt.accentHi.Alpha(a), true);
-    }
-    float t0 = artC + dir * 17, t1 = end - dir * (28.0f + 46.0f * ctlT), len = (std::max)(18.0f, std::fabs(t1 - t0)), tc = (t0 + t1) / 2;
+    float ctlT = anim::Clamp01(islandCtlT);
     D2D1_MATRIX_3X2_F was;
     ctx->GetTransform(&was);
-    ctx->SetTransform(D2D1::Matrix3x2F::Rotation(left ? -90.0f : 90.0f) * D2D1::Matrix3x2F::Translation(X(dc), tc) * was); // turned text, centered in its stretch
-    canvas->Text(model.track.title, Rect(-len / 2, -12, len, 14), Weight::Medium, 10.5f, t.text.Alpha(a));
-    if (!model.track.artist.empty()) canvas->Text(model.track.artist, Rect(-len / 2, 1, len, 12), Weight::Light, 9.5f, t.textDim.Alpha(a));
-    ctx->SetTransform(was);
-    if (ctlT > 0.01f) {
-        float ca = ctlT * a;
+    if (caCard > 0.01f) {
+        if (cover) {
+            canvas->Art(cover.Get(), coverBlur.Get(), art, 5, caCard);
+        } else {
+            canvas->Fill(art, 5, mt.cardHi.Alpha(caCard));
+            canvas->Icon(glyph::Music, {X(dc), artC}, 12, mt.accentHi.Alpha(caCard), true);
+        }
+        float t0 = artC + dir * 17, t1 = end - dir * (28.0f + 46.0f * ctlT), len = (std::max)(18.0f, std::fabs(t1 - t0)), tc = (t0 + t1) / 2;
+        ctx->SetTransform(D2D1::Matrix3x2F::Rotation(left ? -90.0f : 90.0f) * D2D1::Matrix3x2F::Translation(X(dc), tc) * was); // turned text, centered in its stretch
+        DrawTrackCueText(*canvas, model, t, mt, -len / 2, len, -12, 1, caCard);
+        ctx->SetTransform(was);
+    }
+    if (ctlT > 0.01f && caCard > 0.01f) {
+        float ca = ctlT * caCard;
         float d0 = end - dir * 70.0f * ctlT, d1 = end;
         D2D1_RECT_F dock = {X(dc) - 12.0f, (std::min)(d0, d1), X(dc) + 12.0f, (std::max)(d0, d1)};
         canvas->Fill(dock, 12.0f, t.cardHi.Alpha(0.62f * ca));
@@ -1057,6 +1135,7 @@ bool Drawer::DrawIslandSide(float h, float a) {
             bool en[3] = {model.track.canPrev, true, model.track.canNext};
             for (int i = 0; i < 3; ++i) {
                 float cyCtl = end - dir * (57.0f - i * 22.0f);
+                D2D1_RECT_F rb = IslandCtlRect(i, h);
                 bool hov = (islandCtlBtn == i);
                 if (hov && en[i])
                     canvas->Fill(Rect(X(dc) - 10.0f, cyCtl - 9.0f, 20.0f, 18.0f), 9.0f, mt.accent.Alpha(0.30f * ca));
@@ -1064,17 +1143,18 @@ bool Drawer::DrawIslandSide(float h, float a) {
                 ctx->SetTransform(D2D1::Matrix3x2F::Rotation(left ? -90.0f : 90.0f) * D2D1::Matrix3x2F::Translation(X(dc), cyCtl) * was);
                 canvas->Icon(icons[i], {0.0f, 0.0f}, i == 1 ? 15.0f : 14.0f, icCol, true);
                 ctx->SetTransform(was);
+                (void)rb;
             }
         }
     }
-    if (ctlT < 0.99f) {
+    if (ctlT < 0.99f && caCard > 0.01f) {
         if (islandHot && !model.vizOn) {
-            Color ink = mt.accentHi.Alpha((1.0f - ctlT) * a);
+            Color ink = mt.accentHi.Alpha((1.0f - ctlT) * caCard);
             float s = left ? 1.0f : -1.0f;
             canvas->Line({X(dc) - 3 * s, barsC - 6}, {X(dc) + 3 * s, barsC}, ink, 2);
             canvas->Line({X(dc) + 3 * s, barsC}, {X(dc) - 3 * s, barsC + 6}, ink, 2);
         } else {
-            float barA = (1.0f - ctlT) * a;
+            float barA = (1.0f - ctlT) * caCard;
             for (int i = 0; i < 4; ++i) { // bars grow across the pill
                 float v = islandBars[i], bl = 3 + 11 * v, y = barsC - 11 + i * 6;
                 canvas->Fill({X(dc) - bl / 2, y, X(dc) + bl / 2, y + 3.5f}, 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(barA));

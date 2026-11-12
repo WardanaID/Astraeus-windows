@@ -476,6 +476,10 @@ void Model::SkipTrack(int dir) {
         trackSkipWasTitle = track.title;
         trackSkipWasArtist = track.artist;
     }
+    trackCue = kCueNone;
+    trackCueAt = 0;
+    cueRealTrack = false;
+    wasTrackPlaying = true;
     trackSkipDir = dir > 0 ? 1 : -1;
     trackSkipAt = GetTickCount64();
     if (dir > 0) media.Next();
@@ -499,6 +503,25 @@ bool Model::StepTrackTransition() {
     return true;
 }
 
+float Model::TrackCueProgress() const {
+    if (trackCue == kCueNone) return 1.0f;
+    ULONGLONG el = GetTickCount64() - trackCueAt;
+    return el >= kTrackCueMs ? 1.0f : (float)el / (float)kTrackCueMs;
+}
+
+bool Model::StepTrackCue() {
+    if (trackCue == kCueNone) return false;
+    if (GetTickCount64() - trackCueAt < kTrackCueMs) return false;
+    bool dropTrack = (trackCue == kCueStop && !cueRealTrack);
+    trackCue = kCueNone;
+    trackCueAt = 0;
+    cueTitle.clear();
+    cueArtist.clear();
+    cueRealTrack = false;
+    if (dropTrack) OnMedia();
+    return true;
+}
+
 void Model::OnMedia() {
     sys::Track raw;
     bool snap = media.Snapshot(raw);
@@ -511,6 +534,7 @@ void Model::OnMedia() {
             trackSkipAt = 0;
             trackSkipWasTitle.clear();
             trackSkipWasArtist.clear();
+            wasTrackPlaying = raw.playing;
         } else if (GetTickCount64() - trackSkipAt < kTrackSkipMs) {
             hasTrack = true;
             if (!raw.app.empty()) track.app = raw.app;
@@ -532,7 +556,28 @@ void Model::OnMedia() {
         }
     }
 
+    bool playingNow = valid && raw.playing;
+    if (!wasTrackPlaying && playingNow) {
+        trackCue = kCueStart;
+        trackCueAt = GetTickCount64();
+        cueRealTrack = true;
+        cueTitle = raw.title;
+        cueArtist = raw.artist;
+    } else if (wasTrackPlaying && !playingNow) {
+        trackCue = kCueStop;
+        trackCueAt = GetTickCount64();
+        cueRealTrack = valid;
+        cueTitle = valid ? raw.title : track.title;
+        cueArtist = valid ? raw.artist : track.artist;
+    }
+    wasTrackPlaying = playingNow;
+
     if (!valid) {
+        if (trackCue == kCueStop && !cueRealTrack && GetTickCount64() - trackCueAt < kTrackCueMs) {
+            hasTrack = true;
+            track.playing = false;
+            return;
+        }
         hasTrack = false;
         track = sys::Track{};
         return;
@@ -1435,6 +1480,8 @@ std::wstring Model::DeskItemText(int k, int& icon) const {
     case kDMusic: {
         if (!hasTrack || track.title.empty()) return L"";
         icon = glyph::Music;
+        if (trackCue == kCueStart && TrackCueProgress() < 0.56f) return L"Now playing";
+        if (trackCue == kCueStop) return L"Stopped playing";
         return track.title.size() > kDeskSongMax ? track.title.substr(0, kDeskSongMax - 1) + L"…" : track.title;
     }
     case kDCover:
