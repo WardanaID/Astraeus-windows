@@ -4,6 +4,7 @@
 
 #include "anim.h"
 #include "glyphs.h"
+#include "notifs.h"
 #include "pages.h"
 
 namespace {
@@ -315,7 +316,7 @@ void MediaCompact(PageCtx& p) { // a smaller cover beside the song, the wave and
     FlipArt(p, art, 16, 40);
     art = place;
     float x = r.left + kPad + kArt + 22, wdt = r.right - kPad - x, y0 = r.top + kPad + 6;
-    c.TextSp(fmt::Upper(has ? tr.app : L"Idle"), Rect(x, y0, wdt, 16), Weight::Medium, 10.5f, t.accent, 1.6f);
+    DrawMediaSource(p, "md.srcapp.c", Rect(x, y0, wdt, 16), t, 1.6f);
     c.Text(has && !tr.title.empty() ? tr.title : L"Nothing playing", Rect(x, y0 + 22, wdt, 36), Weight::Medium, 25, t.text);
     std::wstring sub = !has ? L"Start music or a video in any app" : tr.album.empty() || tr.album == tr.artist ? tr.artist : tr.artist + L"  ·  " + tr.album;
     c.Text(sub, Rect(x, y0 + 60, wdt, 22), Weight::Light, 15, t.textDim);
@@ -346,7 +347,7 @@ void MediaTall(PageCtx& p) { // sidebar: big centered art, everything else stack
     FlipArt(p, art, 18, 64);
     art = place; // the text below stays put while the cover lifts
     float x = r.left + 28, wdt = Width(r) - 56, y = art.bottom + 26;
-    c.TextSp(fmt::Upper(has ? tr.app : L"Idle"), Rect(x, y, wdt, 16), Weight::Medium, 10.5f, t.accent, 1.6f, Align::Center);
+    DrawMediaSource(p, "md.srcapp.t", Rect(x, y, wdt, 16), t, 1.6f, Align::Center);
     c.Text(has && !tr.title.empty() ? tr.title : L"Nothing playing", Rect(x, y + 22, wdt, 36), Weight::Medium, 25, t.text, Align::Center);
     std::wstring sub = !has ? L"Start music or a video in any app" : tr.album.empty() || tr.album == tr.artist ? tr.artist : tr.artist + L"  ·  " + tr.album;
     c.Text(sub, Rect(x, y + 60, wdt, 22), Weight::Light, 16, t.textDim, Align::Center);
@@ -413,7 +414,7 @@ static void DrawMediaBody(PageCtx& p) {
     FlipArt(p, art, 18, 64);
     const float block = 210; // label, title, artist, wave, controls: one tight stack, centered beside the art
     float y0 = (std::max)(r.top + 26, (r.top + r.bottom - block) / 2);
-    c.TextSp(fmt::Upper(has ? tr.app : L"Idle"), Rect(x, y0, wdt, 16), Weight::Medium, 10.5f, t.accent, 1.6f);
+    DrawMediaSource(p, "md.srcapp.f", Rect(x, y0, wdt, 16), t, 1.6f);
     c.Text(has && !tr.title.empty() ? tr.title : L"Nothing playing", Rect(x, y0 + 22, wdt, 44), Weight::Medium, 31, t.text);
     std::wstring sub = !has ? L"Start music or a video in any app" :
                        tr.album.empty() || tr.album == tr.artist ? tr.artist : tr.artist + L"  ·  " + tr.album;
@@ -462,4 +463,41 @@ void FlipArt(PageCtx& p, const D2D1_RECT_F& art, float radius, float iconPx) {
     else c.Icon(glyph::Music, o, iconPx, t.textLow);
     if (turning) c.Fill(art, radius, Color{0, 0, 0, 0.35f * (1 - sx)}); // its far side in shade
     c.Target()->SetTransform(was);
+}
+
+void DrawMediaSource(PageCtx& p, const char* idPrefix, const D2D1_RECT_F& r, const Theme& t, float tracking, Align align) {
+    Canvas& c = p.ui.C();
+    const sys::Track& tr = p.m.track;
+    bool has = p.m.hasTrack && !tr.app.empty();
+    std::wstring label = fmt::Upper(has ? tr.app : L"Idle");
+    if (!has) {
+        c.TextSp(label, r, Weight::Medium, 10.5f, t.accent, tracking, align);
+        return;
+    }
+    float textW = c.Measure(label, Weight::Medium, 10.5f) + (label.size() > 1 ? (float)(label.size() - 1) * tracking : 0.0f);
+    float iconGap = 15.0f;
+    float contentW = (std::min)(Width(r), textW + iconGap);
+    float left = align == Align::Center ? (r.left + r.right - contentW) / 2 : (align == Align::Right ? r.right - contentW : r.left);
+    D2D1_RECT_F pill = Rect(left - 6.0f, r.top - 3.0f, contentW + 12.0f, Height(r) + 6.0f);
+    uint32_t id = Ui::Id(idPrefix);
+    Ui::Hit h = p.ui.Button(id, pill);
+    p.ui.Name(L"Open " + tr.app);
+    float hv = p.ui.Smooth(id, h.down ? 1.0f : (h.hover ? 0.72f : 0.0f), 18);
+    if (hv > 0.01f) {
+        c.Fill(pill, Height(pill) / 2, t.accent.Alpha(0.16f * hv));
+        c.Stroke(pill, Height(pill) / 2, t.accent.Alpha(0.32f * hv), 1.0f);
+    }
+    Color ink = t.accent.Mix(t.text, 0.35f * hv);
+    float tw = (std::max)(12.0f, contentW - iconGap + 2.0f);
+    c.TextSp(label, Rect(left, r.top, tw, Height(r)), Weight::Medium, 10.5f, ink, tracking, Align::Left);
+    c.Icon(glyph::OpenNew, {left + (std::min)(tw, textW) + 8.0f, (r.top + r.bottom) / 2 - 0.5f}, 10.0f, ink.Alpha(0.65f + 0.35f * hv));
+    if (h.hover) {
+        p.hint = L"Open app";
+        p.hintRect = pill;
+        p.hintFade = hv;
+    }
+    if (h.clicked) {
+        sys::OpenAppWindow(tr.appId, tr.app, tr.title);
+        p.wantClose = true;
+    }
 }

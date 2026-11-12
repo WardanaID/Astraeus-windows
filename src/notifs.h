@@ -20,7 +20,8 @@ struct Notif {
 
 std::vector<Notif> ReadNotifs(size_t max = 50, bool* ok = nullptr) noexcept;  // newest first, toasts only, not expired; empty on any failure, ok tells it apart from none
 int64_t NotifStamp() noexcept;  // changes when the db or its wal is written; cheap, poll only while the panel is open
-bool OpenNotifApp(const Notif& n) noexcept;  // protocol launch uri if it looks like one, else shell:AppsFolder\<aumid>
+bool OpenNotifApp(const Notif& n) noexcept;  // focus existing window of sending app first, else protocol launch uri / shell:AppsFolder\<aumid>
+bool OpenAppWindow(const std::wstring& aumid, const std::wstring& appName = {}, const std::wstring& titleHint = {}) noexcept;  // focus existing window matching aumid/app, else launch via shell:AppsFolder
 std::wstring AppNameOf(const std::wstring& aumid) noexcept;  // shell display name, cached; falls back to the aumid's last segment
 bool ReadNotifIcon(const Notif& n, std::vector<uint32_t>& px, unsigned& w, unsigned& h, bool& round) noexcept;  // 64px premultiplied bgra from toast image or app shell icon
 

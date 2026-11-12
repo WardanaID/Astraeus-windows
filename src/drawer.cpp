@@ -1518,10 +1518,17 @@ LRESULT Drawer::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (peekToastNow && (!peekToast.aumid.empty() || !peekToast.launch.empty())) {
                 sys::Notif n;
+                n.app = peekToast.app;
                 n.aumid = peekToast.aumid;
+                n.title = peekToast.title;
+                n.body = peekToast.body;
                 n.launch = peekToast.launch;
-                sys::OpenNotifApp(n);
                 DismissPeekItem(peekIdx);
+                if (opened && !Pinned()) {
+                    keysFrom = nullptr;
+                    Close();
+                }
+                sys::OpenNotifApp(n);
                 return true;
             }
             return false;
