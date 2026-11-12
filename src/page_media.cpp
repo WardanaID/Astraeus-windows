@@ -293,9 +293,9 @@ void Controls(PageCtx& p, float cx, float cy, float k) { // shuffle, previous, p
     const Theme ct = theme::Lift(p.media); // the play button leans toward the ink, so it stands clear of the glow behind it
     float s1 = 132 * k, s2 = 72 * k;
     if (w::IconBtn(ui, ct, Ui::Id("md.shuffle"), {cx - s1, cy}, 40 * k, glyph::Shuffle, 22 * k, has && tr.canShuf, has && tr.shuffle)) p.m.media.ToggleShuffle();
-    if (w::IconBtn(ui, ct, Ui::Id("md.prev"), {cx - s2, cy}, 46 * k, glyph::Prev, 30 * k, has && tr.canPrev)) p.m.media.Previous();
+    if (w::IconBtn(ui, ct, Ui::Id("md.prev"), {cx - s2, cy}, 46 * k, glyph::Prev, 30 * k, has && tr.canPrev)) p.m.PrevTrack();
     if (w::PlayBtn(ui, ct, Ui::Id("md.play"), {cx, cy}, 60 * k, has && tr.playing, has)) p.m.media.TogglePlay();
-    if (w::IconBtn(ui, ct, Ui::Id("md.next"), {cx + s2, cy}, 46 * k, glyph::Next, 30 * k, has && tr.canNext)) p.m.media.Next();
+    if (w::IconBtn(ui, ct, Ui::Id("md.next"), {cx + s2, cy}, 46 * k, glyph::Next, 30 * k, has && tr.canNext)) p.m.NextTrack();
     if (w::IconBtn(ui, ct, Ui::Id("md.repeat"), {cx + s1, cy}, 40 * k, has && tr.repeat == 1 ? glyph::RepeatOne : glyph::Repeat, 22 * k, has && tr.canRep,
                    has && tr.repeat != 0))
         p.m.media.CycleRepeat();
@@ -362,9 +362,9 @@ void MediaTall(PageCtx& p) { // sidebar: big centered art, everything else stack
     float cy = (std::min)(seek.bottom + 50, r.bottom - 50), cx = (r.left + r.right) / 2; // controls right under the wave
     const Theme ct = theme::Lift(t); // the play button leans toward the ink, so it stands clear of the glow behind it
     if (w::IconBtn(ui, ct, Ui::Id("md.shuffle"), {cx - 132, cy}, 40, glyph::Shuffle, 22, has && tr.canShuf, has && tr.shuffle)) p.m.media.ToggleShuffle();
-    if (w::IconBtn(ui, ct, Ui::Id("md.prev"), {cx - 72, cy}, 46, glyph::Prev, 30, has && tr.canPrev)) p.m.media.Previous();
+    if (w::IconBtn(ui, ct, Ui::Id("md.prev"), {cx - 72, cy}, 46, glyph::Prev, 30, has && tr.canPrev)) p.m.PrevTrack();
     if (w::PlayBtn(ui, ct, Ui::Id("md.play"), {cx, cy}, 60, has && tr.playing, has)) p.m.media.TogglePlay();
-    if (w::IconBtn(ui, ct, Ui::Id("md.next"), {cx + 72, cy}, 46, glyph::Next, 30, has && tr.canNext)) p.m.media.Next();
+    if (w::IconBtn(ui, ct, Ui::Id("md.next"), {cx + 72, cy}, 46, glyph::Next, 30, has && tr.canNext)) p.m.NextTrack();
     if (w::IconBtn(ui, ct, Ui::Id("md.repeat"), {cx + 132, cy}, 40, has && tr.repeat == 1 ? glyph::RepeatOne : glyph::Repeat, 22, has && tr.canRep,
                    has && tr.repeat != 0))
         p.m.media.CycleRepeat();
@@ -434,9 +434,9 @@ static void DrawMediaBody(PageCtx& p) {
 
     if (w::IconBtn(ui, ct, Ui::Id("md.shuffle"), {cx - 132, cy}, 40, glyph::Shuffle, 22, has && tr.canShuf, has && tr.shuffle))
         p.m.media.ToggleShuffle();
-    if (w::IconBtn(ui, ct, Ui::Id("md.prev"), {cx - 72, cy}, 46, glyph::Prev, 30, has && tr.canPrev)) p.m.media.Previous();
+    if (w::IconBtn(ui, ct, Ui::Id("md.prev"), {cx - 72, cy}, 46, glyph::Prev, 30, has && tr.canPrev)) p.m.PrevTrack();
     if (w::PlayBtn(ui, ct, Ui::Id("md.play"), {cx, cy}, 60, has && tr.playing, has)) p.m.media.TogglePlay();
-    if (w::IconBtn(ui, ct, Ui::Id("md.next"), {cx + 72, cy}, 46, glyph::Next, 30, has && tr.canNext)) p.m.media.Next();
+    if (w::IconBtn(ui, ct, Ui::Id("md.next"), {cx + 72, cy}, 46, glyph::Next, 30, has && tr.canNext)) p.m.NextTrack();
     bool repeating = has && tr.repeat != 0;
     if (w::IconBtn(ui, ct, Ui::Id("md.repeat"), {cx + 132, cy}, 40, has && tr.repeat == 1 ? glyph::RepeatOne : glyph::Repeat, 22,
                       has && tr.canRep, repeating))

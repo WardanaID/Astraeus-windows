@@ -245,9 +245,9 @@ void Board::TileMedia(const D2D1_RECT_F& r, float k) { // the song: cover, words
     float ctl = std::clamp(Height(col) * 0.26f, 38.0f, 64.0f); // the buttons, then the progress line over them
     k = (std::min)(k, kHeadMax);
     float cy = col.bottom - ctl / 2, cx = (col.left + col.right) / 2;
-    if (w::IconBtn(ui, m, Ui::Id("bd.prev"), {cx - ctl * 1.25f, cy}, ctl * 0.8f, glyph::Prev, ctl * 0.55f, tr.canPrev)) model.media.Previous();
+    if (w::IconBtn(ui, m, Ui::Id("bd.prev"), {cx - ctl * 1.25f, cy}, ctl * 0.8f, glyph::Prev, ctl * 0.55f, tr.canPrev)) model.PrevTrack();
     if (w::PlayBtn(ui, m, Ui::Id("bd.play"), {cx, cy}, ctl, tr.playing, true)) model.media.TogglePlay();
-    if (w::IconBtn(ui, m, Ui::Id("bd.next"), {cx + ctl * 1.25f, cy}, ctl * 0.8f, glyph::Next, ctl * 0.55f, tr.canNext)) model.media.Next();
+    if (w::IconBtn(ui, m, Ui::Id("bd.next"), {cx + ctl * 1.25f, cy}, ctl * 0.8f, glyph::Next, ctl * 0.55f, tr.canNext)) model.NextTrack();
     if (tr.duration <= 0) return;
     float py = cy - ctl / 2 - 16 * k;
     D2D1_RECT_F bar = {col.left, py - 8 * k, col.right, py + 8 * k};

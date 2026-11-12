@@ -463,10 +463,84 @@ void Model::ReadAudio() {
     }
 }
 
+bool Model::HasMusicMeta(const sys::Track& t) {
+    auto nonBlank = [](const std::wstring& s) {
+        return std::any_of(s.begin(), s.end(), [](wchar_t c) { return !iswspace(c); });
+    };
+    return nonBlank(t.title) && nonBlank(t.artist);
+}
+
+void Model::SkipTrack(int dir) {
+    if (!dir) return;
+    if (trackSkipDir == 0 && hasTrack) {
+        trackSkipWasTitle = track.title;
+        trackSkipWasArtist = track.artist;
+    }
+    trackSkipDir = dir > 0 ? 1 : -1;
+    trackSkipAt = GetTickCount64();
+    if (dir > 0) media.Next();
+    else media.Previous();
+    hasTrack = true;
+    track.title = dir > 0 ? L"Next" : L"Previous";
+    track.artist = !trackSkipWasTitle.empty() ? trackSkipWasTitle : (!track.app.empty() ? track.app : L"Music");
+    track.playing = true; // keep pill & playing state alive smoothly until the new song metadata lands
+    track.canPrev = true;
+    track.canNext = true;
+}
+
+bool Model::StepTrackTransition() {
+    if (trackSkipDir == 0) return false;
+    if (GetTickCount64() - trackSkipAt < kTrackSkipMs) return false;
+    trackSkipDir = 0;
+    trackSkipAt = 0;
+    trackSkipWasTitle.clear();
+    trackSkipWasArtist.clear();
+    OnMedia();
+    return true;
+}
+
 void Model::OnMedia() {
-    hasTrack = media.Snapshot(track);
+    sys::Track raw;
+    bool snap = media.Snapshot(raw);
     media.Sources(mediaSources, mediaPin);
-    if (fullLyrics && hasTrack && track.music && track.duration > 0) lyrics.Want(track.title, track.artist, track.album, track.duration / 1e7); // ready before fullscreen opens; no-op once known
+    bool valid = snap && HasMusicMeta(raw);
+
+    if (trackSkipDir != 0) {
+        if (valid && (raw.title != trackSkipWasTitle || raw.artist != trackSkipWasArtist)) {
+            trackSkipDir = 0; // new track landed cleanly
+            trackSkipAt = 0;
+            trackSkipWasTitle.clear();
+            trackSkipWasArtist.clear();
+        } else if (GetTickCount64() - trackSkipAt < kTrackSkipMs) {
+            hasTrack = true;
+            if (!raw.app.empty()) track.app = raw.app;
+            track.title = trackSkipDir > 0 ? L"Next" : L"Previous";
+            track.artist = !trackSkipWasTitle.empty() ? trackSkipWasTitle : (!track.app.empty() ? track.app : L"Music");
+            track.playing = true;
+            track.canPrev = true;
+            track.canNext = true;
+            if (raw.cover && raw.coverId != track.coverId) {
+                track.cover = raw.cover;
+                track.coverId = raw.coverId;
+            }
+            return;
+        } else {
+            trackSkipDir = 0;
+            trackSkipAt = 0;
+            trackSkipWasTitle.clear();
+            trackSkipWasArtist.clear();
+        }
+    }
+
+    if (!valid) {
+        hasTrack = false;
+        track = sys::Track{};
+        return;
+    }
+    hasTrack = true;
+    track = std::move(raw);
+    if (fullLyrics && hasTrack && track.music && track.duration > 0)
+        lyrics.Want(track.title, track.artist, track.album, track.duration / 1e7); // ready before fullscreen opens; no-op once known
 }
 
 void Model::OnBright(WPARAM value) {

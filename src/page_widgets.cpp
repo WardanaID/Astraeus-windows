@@ -160,10 +160,10 @@ void DoAct(Model& m, faces::Act act, int kind) {
         m.media.TogglePlay();
         break;
     case faces::Act::kNext:
-        m.media.Next();
+        m.NextTrack();
         break;
     case faces::Act::kPrev:
-        m.media.Previous();
+        m.PrevTrack();
         break;
     default:
         break;
